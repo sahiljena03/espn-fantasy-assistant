@@ -84,16 +84,47 @@ def hydrate_free_agents(
             league.finalScoringPeriod,
             additional_filters=additional_filters,
         )
-        wraps = response.get("players", []) if isinstance(response, dict) else []
+        if isinstance(response, dict):
+            wraps = response.get("players", [])
+        elif isinstance(response, list):
+            wraps = response
+        else:
+            wraps = []
+
         for wrap in wraps:
             if not isinstance(wrap, dict):
                 continue
             player = Player(wrap, league.year, league.pro_schedule)
+            metadata = player_metadata_from_wrapper(wrap)
+            player.percent_owned = metadata["percent_owned"]
+            player.percent_started = metadata["percent_started"]
+            original = originals.get(player.playerId)
+            if original is not None:
+                player.lineupSlot = getattr(original, "lineupSlot", player.lineupSlot)
             hydrated[player.playerId] = player
 
-    # Preserve ESPN's free-agent ordering; leave any missing card unhydrated so
-    # schedule coverage checks can detect incomplete player-card responses.
+    # Preserve ESPN's original ordering; leave missing cards unhydrated so validation
+    # can fail closed rather than inventing a player's schedule or production.
     return [hydrated.get(player_id, originals[player_id]) for player_id in player_ids]
+
+
+def player_metadata_from_wrapper(wrap: dict) -> dict[str, float | None]:
+    """Extract ownership fields omitted by espn-api's basketball Player model."""
+    pool_entry = wrap.get("playerPoolEntry", {})
+    if not isinstance(pool_entry, dict):
+        pool_entry = {}
+    inner = pool_entry.get("player", wrap.get("player", {}))
+    if not isinstance(inner, dict):
+        inner = {}
+    ownership = inner.get("ownership", wrap.get("ownership", {}))
+    if not isinstance(ownership, dict):
+        ownership = {}
+    owned = numeric(ownership.get("percentOwned"), -1.0)
+    started = numeric(ownership.get("percentStarted"), -1.0)
+    return {
+        "percent_owned": owned if owned >= 0 else None,
+        "percent_started": started if started >= 0 else None,
+    }
 
 
 
@@ -281,16 +312,19 @@ def blended_player_average(
     last_15: float | None,
     last_30: float | None,
 ) -> float:
-    """Use ESPN's league-specific projection first; fall back without requiring every split."""
-    if projected > 0:
-        return projected
-    if season > 0:
-        return season
-    for value in (last_30, last_15, last_7):
-        if value is not None and value > 0:
-            return value
-    return 0.0
-
+    """Blend projections with realized production to limit early-season projection spikes."""
+    components = [
+        (projected, 0.40),
+        (season, 0.30),
+        (last_30 or 0.0, 0.15),
+        (last_15 or 0.0, 0.10),
+        (last_7 or 0.0, 0.05),
+    ]
+    available = [(value, weight) for value, weight in components if value > 0]
+    if not available:
+        return 0.0
+    total_weight = sum(weight for _, weight in available)
+    return sum(value * weight for value, weight in available) / total_weight
 
 def latest_player_news(player: object) -> str:
     news = getattr(player, "news", []) or []
@@ -367,13 +401,50 @@ def display_average(value: float | None) -> str:
     return f"{value:.1f}" if value is not None and value > 0 else "—"
 
 
+def is_protected_roster_player(candidate: OutlookCandidate) -> bool:
+    """Protect roster players with >50% ownership or >30 FPPG."""
+    credible_rates = [
+        candidate.projected_avg,
+        candidate.season_avg,
+        candidate.last_7 or 0.0,
+        candidate.last_15 or 0.0,
+        candidate.last_30 or 0.0,
+    ]
+    return (
+        candidate.percent_owned is None
+        or candidate.percent_owned > 50.0
+        or max(credible_rates, default=0.0) > 30.0
+    )
+
+
+def free_agent_rejection_reason(candidate: OutlookCandidate) -> str | None:
+    """Apply the user's hard ownership and scoring limits to waiver additions."""
+    if candidate.percent_owned is None:
+        return "ownership unavailable"
+    if candidate.percent_owned > 50.0:
+        return "ownership above 50%"
+    peak_rate = max(
+        candidate.projected_avg,
+        candidate.season_avg,
+        candidate.last_7 or 0.0,
+        candidate.last_15 or 0.0,
+        candidate.last_30 or 0.0,
+    )
+    if peak_rate > 30.0:
+        return "FPPG above 30"
+    if candidate.blended_avg <= 0:
+        return "no scoring average"
+    if not candidate.game_dates:
+        return "no scheduled games"
+    return None
+
+
 def drop_priority_key(candidate: OutlookCandidate) -> tuple[float, float, float]:
     return (
         candidate.estimated_points,
         candidate.blended_avg,
         candidate.expected_games,
     )
-
 
 def swap_priority_key(
     comparison: tuple[float, OutlookCandidate, OutlookCandidate]
@@ -501,6 +572,7 @@ def _best_swap(
         player for player in roster
         if candidate_data.get(getattr(player, "playerId", None)) is not None
         and candidate_data[getattr(player, "playerId")].lineup_slot != "IR"
+        and not is_protected_roster_player(candidate_data[getattr(player, "playerId")])
     ]
 
     for add_player in candidate_players:
@@ -531,10 +603,14 @@ def _best_swap(
 
 
 def render_next_week_outlook(
-    league: League, team: object, free_agents: list[object], today: date
+    league: League,
+    team: object,
+    free_agents: list[object],
+    today: date,
+    roster_players: list[object] | None = None,
 ) -> str:
     start, end = next_week_bounds(today)
-    roster = list(getattr(team, "roster", []) or [])
+    roster = list(roster_players if roster_players is not None else (getattr(team, "roster", []) or []))
     roster_candidates = {
         getattr(player, "playerId", None): outlook_candidate_from_player(player, start, end)
         for player in roster
@@ -577,6 +653,21 @@ def render_next_week_outlook(
         lines.extend(["", "Could not compare pickups because the roster data is empty."])
         return "\n".join(lines)
 
+    missing_roster_rates = [
+        candidate.name
+        for candidate in roster_candidates.values()
+        if candidate.lineup_slot != "IR" and candidate.blended_avg <= 0
+    ]
+    if missing_roster_rates:
+        names = ", ".join(missing_roster_rates[:8])
+        lines.extend([
+            "",
+            f"**Data warning:** weekly fantasy rates are missing for roster players: {names}. "
+            "No add/drop recommendations were generated because the model cannot safely value "
+            "your current lineup.",
+        ])
+        return "\n".join(lines)
+
     if nba_players and schedule_pct < 80:
         lines.extend([
             "",
@@ -588,21 +679,37 @@ def render_next_week_outlook(
 
     candidate_players = []
     candidate_data = dict(roster_candidates)
+    rejected = {
+        "ownership unavailable": 0,
+        "ownership above 50%": 0,
+        "FPPG above 30": 0,
+        "no scoring average": 0,
+        "no scheduled games": 0,
+    }
     for player in free_agents:
         player_id = getattr(player, "playerId", None)
         if player_id is None or player_id in roster_ids:
             continue
         candidate = outlook_candidate_from_player(player, start, end)
-        if candidate.expected_games <= 0 or candidate.blended_avg <= 0:
+        reason = free_agent_rejection_reason(candidate)
+        if reason:
+            rejected[reason] = rejected.get(reason, 0) + 1
             continue
         candidate_data[player_id] = candidate
         candidate_players.append(player)
 
+    lines.extend([
+        "",
+        f"**Waiver filters:** excluded {rejected['ownership above 50%']} players above 50% ownership, "
+        f"{rejected['FPPG above 30']} players above 30 FPPG, and "
+        f"{rejected['ownership unavailable']} players without verifiable ownership.",
+    ])
+
     if not candidate_players:
         lines.extend([
             "",
-            "No free agents in the returned ESPN pool have both a scheduled game next week "
-            "and a usable points estimate.",
+            "No free agents remain after the ownership, scoring, and schedule filters. "
+            "The report will not relax these rules to fill three recommendation slots.",
         ])
         return "\n".join(lines)
 
@@ -649,7 +756,18 @@ def render_next_week_outlook(
         ]
 
     if not selected:
-        lines.extend(["", "No eligible positive roster improvements were identified."])
+        eligible_drops = [
+            candidate.name for candidate in roster_candidates.values()
+            if candidate.lineup_slot != "IR" and not is_protected_roster_player(candidate)
+        ]
+        if not eligible_drops:
+            lines.extend([
+                "",
+                "No eligible drop candidate remains. Roster players above 50% ownership, "
+                "above 30 FPPG, or missing ownership data are protected from drop recommendations.",
+            ])
+        else:
+            lines.extend(["", "No eligible positive roster improvements were identified."])
         return "\n".join(lines)
 
     news_ids = [
@@ -671,8 +789,8 @@ def render_next_week_outlook(
 
     lines.extend([
         "",
-        "| Priority | Pickup | Consider dropping | Pickup est. pts | Drop est. pts | Team lineup gain | Games (expected) | Model FPPG | L15 | Injury | Confidence |",
-        "|---:|---|---|---:|---:|---:|---:|---:|---|---|---|",
+        "| Priority | Pickup | Owned | Pickup est. pts | Consider dropping | Drop est. pts | Team lineup gain | Games (expected) | Model FPPG | L15 | Injury | Confidence |",
+        "|---:|---|---:|---:|---|---:|---:|---:|---:|---:|---|---|",
     ])
 
     for index, (gain, add_player, drop_player, after_points, is_upgrade) in enumerate(selected, start=1):
@@ -682,8 +800,9 @@ def render_next_week_outlook(
         marker = "+" if gain >= 0 else ""
         lines.append(
             f"| {index} | {label} ({add.position}, {add.nba_team}) "
-            f"| {drop.name} | {add.estimated_points:.1f} | {drop.estimated_points:.1f} "
-            f"| **{marker}{gain:.1f}** | {len(add.game_dates)} ({add.expected_games:.1f}) "
+            f"| {add.percent_owned:.1f}% | {add.estimated_points:.1f} | {drop.name} "
+            f"| {drop.estimated_points:.1f} | **{marker}{gain:.1f}** "
+            f"| {len(add.game_dates)} ({add.expected_games:.1f}) "
             f"| {display_average(add.blended_avg)} | {display_average(add.last_15)} "
             f"| {add.injury} | {add.confidence} |"
         )
@@ -851,7 +970,13 @@ def render_report(league: League, today: date) -> str:
         lines.append("- No roster players with a remaining game were identified.")
 
     if today.weekday() in (5, 6):
-        lines.extend(["", render_next_week_outlook(league, team, free_agents, today)])
+        hydrated_roster = hydrate_free_agents(league, list(team.roster))
+        lines.extend([
+            "",
+            render_next_week_outlook(
+                league, team, free_agents, today, roster_players=hydrated_roster
+            ),
+        ])
 
     lines.extend([
         "",
