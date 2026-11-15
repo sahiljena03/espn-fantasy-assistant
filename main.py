@@ -1376,6 +1376,13 @@ def render_next_week_outlook(
             "mislabelled as upgrades."
         )
 
+    lineup_blocked_count = len(lineup_blocked_add_ids.difference(used_add_ids))
+    if lineup_blocked_count:
+        lines.append(
+            f"{lineup_blocked_count} additional waiver candidates were excluded because at least "
+            "one expected-available game would force them onto the bench under your active-slot limits."
+        )
+
     for index, (gain, add_player, drop_player, after_points, active_games, available_games, is_upgrade) in enumerate(selected, start=1):
         add = candidate_data[getattr(add_player, "playerId")]
         drop = candidate_data[getattr(drop_player, "playerId")]
