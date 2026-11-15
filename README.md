@@ -10,7 +10,7 @@ Daily, read-only waiver analysis for **Scottie on the Spectrum** (ESPN league ID
 - Compares waiver options against lower-value players on your roster.
 - Includes position, NBA team, ESPN injury designation, fantasy points per game, and remaining games.
 - Displays no more than **5 add/drop comparisons**, matching the league's weekly move limit.
-- On **Saturday and Sunday**, compares waiver pickups directly with the weakest projected player on your roster for the upcoming week and ranks up to 3 positive net upgrades. It includes scheduled games, season/recent 7/15/30-day FPPG, ESPN projections, injury/return-date adjustments, position rank, ownership, news, and a data-confidence label. If fewer than 3 positive upgrades exist, it says so and shows the closest alternatives separately.
+- On **Saturday and Sunday**, ranks up to 3 next-week pickups by their marginal effect on your actual starting lineup. It hydrates the free-agent pool with player cards (including NBA schedules), accounts for Eastern-time game dates, active lineup-slot limits, position eligibility, daily vs. scoring-period lineup locks, ESPN projections, season/recent averages, injury status/return dates, and ESPN news. It simulates each recommended move against the roster left by the prior hypothetical move, so the same weak roster slot is not counted as three separate upgrades. When no positive upgrade is found, it shows the strongest alternatives as a watchlist rather than pretending they are upgrades.
 - Publishes the report in the GitHub Actions run summary.
 
 **It never executes roster transactions.** Check ESPN for late injury news, starting status, and your actual remaining acquisition count.
@@ -34,14 +34,32 @@ GitHub Actions cron uses UTC and may start late. The workflow schedules both 13:
 
 ## Methodology and limitations
 
-The script uses the unofficial `espn-api` Python library to read ESPN Fantasy Basketball league, roster, free-agent, schedule, projection, recent-average, injury, and player-news data.
+The script uses the unofficial [espn-api Python library](https://github.com/cwendt94/espn-api) to read league, roster, free-agent, schedule, projection, recent-average, injury, and player-news data.
 
-For the current week, estimated remaining points are:
+### Weekly waiver model
 
-`FPPG × scheduled NBA games remaining this week`
+The ESPN library's `League.free_agents()` method creates free-agent Player objects without the NBA pro schedule. The report now rehydrates returned free agents through `League.player_info()` in batches, which attaches the league's `pro_schedule`. A schedule-coverage check prevents an empty schedule from being silently interpreted as zero games.
 
-On Saturdays and Sundays, the next-week outlook compares each returned free agent against the roster player with the lowest estimated points for that week. It ranks by net gain (pickup estimate minus drop-candidate estimate), rather than by a free agent's standalone points total. It uses the same FPPG blend: ESPN projected FPPG (35%), season FPPG (30%), recent 30-day average (15%), recent 15-day average (10%), and recent 7-day average (10%). Missing averages are omitted and remaining weights normalized, so a player does not need every data field to be considered. It then estimates scheduled games and applies an injury/expected-return adjustment. Positional rank helps break ties; ownership, start rate, recent trends, and ESPN news are shown as context. The report labels data confidence based on available stat splits and schedule data. The free-agent scan was increased to 500 players for the deep league. Players already occupying an IR lineup slot are not proposed as drop candidates.
+The library represents NBA game times as datetimes created from Unix timestamps. The report converts those values to **America/New_York** before deriving the calendar date, avoiding a UTC date rollover on GitHub's runners.
 
-This is a weekly-streaming heuristic, not a full model of minutes, role changes, opponent difficulty, or individualized injury probabilities. Injury designations and news can lag. The waiver pool is limited to the top 250 players returned by ESPN's API.
+The weekend model evaluates the effect of each add/drop on the team's projected **active-lineup points**:
 
-If the league uses category scoring rather than points scoring, FPPG is not an appropriate decision metric and should be replaced with category-specific projections.
+1. Read ESPN's active lineup slot counts and lineup lock mode from league settings.
+2. Estimate each player's weekly points using the league-specific ESPN projected FPPG when available; use season average as the first fallback, then recent 30/15/7 splits if needed. Recent averages are displayed as trend context and missing splits do not disqualify a player.
+3. Estimate expected games individually using the NBA schedule, injury designation, and expected return date.
+4. Optimize the active lineup by position eligibility and slot limits. For daily game-time locks, optimize each day separately; for scoring-period locks, optimize one lineup across the week.
+5. Test each available player against each droppable roster player. Greedily simulate up to three positive swaps, recalculating the roster after each one. This prevents multiple waiver suggestions from claiming the same drop-slot improvement.
+6. If fewer than three positive moves exist, display the best remaining marginal options as watchlist alternatives with their estimated net impact. They are not mislabeled as upgrades.
+
+Current limitations: ESPN projections and injury statuses can lag; expected-return dates are not guarantees; the model does not yet ingest a separate minutes/rotation projection, opponent defensive matchup ratings, Vegas totals, or external injury feeds. The waiver scan is limited to the top `{FREE_AGENT_POOL_SIZE}` free agents returned by ESPN, and no player can be valued perfectly without a validated projection/backtest dataset. The report is intended as decision support, not an automatic transaction engine.
+
+### Design references
+
+These projects informed the design choices; their code and data pipelines are not bundled into this repository.
+
+- [yaqzan/fantasy](https://github.com/yaqzan/fantasy): the closest architectural reference. Its weekly pickup engine models schedule availability, daily vs. weekly lineups, eligible roster slots, injuries, and incremental multi-claim what-if swaps.
+- [sharadmv/nba-fantasy-optimize](https://github.com/sharadmv/nba-fantasy-optimize): models player outcomes from historical performance and evaluates lineup choices by matchup win probability rather than ranking players by raw average alone.
+- [Hashtag Basketball](https://hashtagbasketball.com/user-guide): useful reference for league-specific rankings, per-game vs. total projections, recent-form blends, and schedule-grid-based streaming decisions.
+- [Basketball Monster](https://basketballmonster.com/Weekly): useful reference for dynamic role/news-aware projections, advanced ownership/add-drop signals, schedule analysis, and weekly projections.
+
+The long-term improvement path is to add a separate minutes/role projection source, track forecast errors over time, and calibrate the model against actual weekly fantasy totals from this league.
