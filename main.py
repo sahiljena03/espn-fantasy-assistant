@@ -835,6 +835,9 @@ def player_can_fill_slot(player: object, slot: str) -> bool:
         "G": {"PG", "SG", "G"},
         "F": {"SF", "PF", "F"},
         "G/F": {"PG", "SG", "SF", "PF", "G", "F"},
+        "SG/SF": {"SG", "SF"},
+        "PF/C": {"PF", "C"},
+        "F/C": {"SF", "PF", "F", "C"},
     }
     if slot in slot_groups:
         return bool(eligible.intersection(slot_groups[slot]))
