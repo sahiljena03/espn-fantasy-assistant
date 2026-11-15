@@ -530,19 +530,18 @@ def render_next_week_outlook(
         for player in roster
         if getattr(player, "playerId", None) is not None
     }
-    candidate_players = []
-    candidate_data = dict(roster_candidates)
     roster_ids = set(roster_candidates)
 
-    for player in free_agents:
-        player_id = getattr(player, "playerId", None)
-        if player_id is None or player_id in roster_ids:
-            continue
-        candidate = outlook_candidate_from_player(player, start, end)
-        if candidate.expected_games <= 0 or candidate.blended_avg <= 0:
-            continue
-        candidate_data[player_id] = candidate
-        candidate_players.append(player)
+    schedule_records = sum(
+        bool(getattr(player, "schedule", None))
+        for player in free_agents
+        if str(getattr(player, "proTeam", "")) not in {"FA", "0", ""}
+    )
+    nba_players = sum(
+        1 for player in free_agents
+        if str(getattr(player, "proTeam", "")) not in {"FA", "0", ""}
+    )
+    schedule_pct = 100.0 * schedule_records / nba_players if nba_players else 0.0
 
     slots, daily_lineups, lineup_mode = load_lineup_configuration(league)
     active_roster = [
@@ -560,35 +559,42 @@ def render_next_week_outlook(
         f"**Lineup model:** {len(slots)} active slots · {lineup_mode}. "
         + ("Daily best-lineup optimization." if daily_lineups else "One best lineup across the scoring period."),
         "",
+        f"**Schedule hydration:** {schedule_records}/{nba_players} rostered-NBA free agents "
+        f"({schedule_pct:.0f}%) have schedule data.",
     ]
 
-    if not roster_candidates or not candidate_players:
-        lines.append(
-            "Insufficient roster or free-agent schedule/projection data to produce reliable pickup comparisons."
-        )
-        return "\n".join(lines)
+    if not roster_candidates:
+        lines.extend(["", "Could not compare pickups because the roster data is empty."])
+        return "\\n".join(lines)
 
-    schedule_records = sum(
-        bool(getattr(player, "schedule", None))
-        for player in free_agents
-        if str(getattr(player, "proTeam", "")) not in {"FA", "0", ""}
-    )
-    nba_players = sum(
-        1 for player in free_agents
-        if str(getattr(player, "proTeam", "")) not in {"FA", "0", ""}
-    )
-    schedule_pct = 100.0 * schedule_records / nba_players if nba_players else 0.0
-    lines.append(
-        f"**Schedule hydration:** {schedule_records}/{nba_players} rostered-NBA free agents "
-        f"({schedule_pct:.0f}%) have schedule data."
-    )
     if nba_players and schedule_pct < 80:
         lines.extend([
             "",
             "**Data warning:** ESPN player-card schedule coverage is too low for trustworthy "
-            "waiver rankings. Check the workflow log before acting.",
+            "waiver rankings. The report stopped rather than treating missing schedules as zero games. "
+            "Check the workflow log and ESPN player-card responses before acting.",
         ])
-        return "\n".join(lines)
+        return "\\n".join(lines)
+
+    candidate_players = []
+    candidate_data = dict(roster_candidates)
+    for player in free_agents:
+        player_id = getattr(player, "playerId", None)
+        if player_id is None or player_id in roster_ids:
+            continue
+        candidate = outlook_candidate_from_player(player, start, end)
+        if candidate.expected_games <= 0 or candidate.blended_avg <= 0:
+            continue
+        candidate_data[player_id] = candidate
+        candidate_players.append(player)
+
+    if not candidate_players:
+        lines.extend([
+            "",
+            "No free agents in the returned ESPN pool have both a scheduled game next week "
+            "and a usable points estimate.",
+        ])
+        return "\\n".join(lines)
 
     baseline = lineup_week_points(active_roster, candidate_data, slots, daily_lineups)
     virtual_roster = list(active_roster)
@@ -597,7 +603,7 @@ def render_next_week_outlook(
 
     # Greedily simulate a bundle of up to three distinct pickups. Each subsequent move
     # is evaluated against the roster after the prior hypothetical move, so the same
-    # weak roster slot cannot be counted as an upgrade three times.
+    # weak roster slot cannot be counted as three separate upgrades.
     for _ in range(3):
         best = _best_swap(
             virtual_roster, candidate_players, candidate_data, baseline,
@@ -616,8 +622,7 @@ def render_next_week_outlook(
         baseline = after_points
 
     # If fewer than three positive moves exist, show the strongest remaining options as
-    # watchlist alternatives. They are ranked by marginal lineup impact but are not
-    # presented as positive upgrades.
+    # watchlist alternatives. They are ranked by marginal lineup impact, not called upgrades.
     while len(selected) < 3:
         best = _best_swap(
             virtual_roster, candidate_players, candidate_data, baseline,
@@ -628,21 +633,14 @@ def render_next_week_outlook(
         gain, add_player, drop_player, after_points = best
         selected.append((gain, add_player, drop_player, after_points, False))
         used_add_ids.add(getattr(add_player, "playerId"))
-
-        # Find the next alternative against the same virtual roster; alternatives are
-        # mutually exclusive watchlist choices and must not be treated as a bundle.
-
-        remaining = [
+        candidate_players = [
             player for player in candidate_players
             if getattr(player, "playerId", None) not in used_add_ids
         ]
-        if not remaining:
-            break
-        candidate_players = remaining
 
     if not selected:
-        lines.extend(["", "No eligible free agents had sufficient schedule and scoring data."])
-        return "\n".join(lines)
+        lines.extend(["", "No eligible positive roster improvements were identified."])
+        return "\\n".join(lines)
 
     news_ids = [
         getattr(add_player, "playerId", None)
@@ -664,7 +662,7 @@ def render_next_week_outlook(
     lines.extend([
         "",
         "| Priority | Pickup | Consider dropping | Pickup est. pts | Drop est. pts | Team lineup gain | Games (expected) | Model FPPG | L15 | Injury | Confidence |",
-        "|---:|---|---|---:|---:|---:|---:|---:|---:|---|---|",
+        "|---:|---|---|---:|---:|---:|---:|---:|---|---|---|",
     ])
 
     for index, (gain, add_player, drop_player, after_points, is_upgrade) in enumerate(selected, start=1):
@@ -736,8 +734,7 @@ def render_next_week_outlook(
         "*This is a short-term points-league estimate. Role changes, late injury news, and actual "
         "lineup decisions can change the result; no roster transactions are submitted.*",
     ])
-    return "\n".join(lines)
-
+    return "\\n".join(lines)
 
 def render_report(league: League, today: date) -> str:
     monday, sunday = week_bounds(today)
