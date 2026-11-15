@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from espn_api.basketball import League
+from espn_api.basketball.player import Player
 
 EASTERN = ZoneInfo("America/New_York")
 LEAGUE_ID = 1850516159
@@ -57,11 +58,11 @@ class OutlookCandidate:
 def hydrate_free_agents(
     league: League, players: list[object], batch_size: int = 40
 ) -> list[object]:
-    """Rebuild free-agent Player objects with the league's NBA schedule attached.
+    """Rebuild free-agent Player objects with schedule and recent stat splits.
 
-    espn-api's League.free_agents() constructs Player(player, year) without
-    passing pro_schedule. League.player_info() uses the same player-card data
-    but includes pro_schedule, so batch it to avoid one request per player.
+    espn-api's League.free_agents() constructs Player(player, year) without the
+    NBA pro schedule. Its player-card endpoint can attach the league's full
+    schedule and request ESPN's last_7/last_15/last_30 splits in the same batch.
     """
     originals = {
         getattr(player, "playerId", None): player
@@ -70,21 +71,30 @@ def hydrate_free_agents(
     }
     player_ids = sorted(originals)
     hydrated: dict[int, object] = {}
+    additional_filters = [
+        f"01{league.year}",
+        f"02{league.year}",
+        f"03{league.year}",
+    ]
 
     for offset in range(0, len(player_ids), batch_size):
         batch = player_ids[offset:offset + batch_size]
-        result = league.player_info(playerId=batch)
-        batch_players = result if isinstance(result, list) else [result]
-        for player in batch_players:
-            if player is None:
+        response = league.espn_request.get_player_card(
+            batch,
+            league.finalScoringPeriod,
+            additional_filters=additional_filters,
+        )
+        wraps = response.get("players", []) if isinstance(response, dict) else []
+        for wrap in wraps:
+            if not isinstance(wrap, dict):
                 continue
-            player_id = getattr(player, "playerId", None)
-            if player_id is not None:
-                hydrated[player_id] = player
+            player = Player(wrap, league.year, league.pro_schedule)
+            hydrated[player.playerId] = player
 
-    # Preserve ESPN's free-agent ordering; leave unreturned records visible so
-    # schedule coverage checks can detect an incomplete hydration.
+    # Preserve ESPN's free-agent ordering; leave any missing card unhydrated so
+    # schedule coverage checks can detect incomplete player-card responses.
     return [hydrated.get(player_id, originals[player_id]) for player_id in player_ids]
+
 
 
 def load_lineup_configuration(league: League) -> tuple[list[str], bool, str]:
