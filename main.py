@@ -833,10 +833,12 @@ def player_can_fill_slot(player: object, slot: str) -> bool:
     return slot in eligible
 
 
-def best_fit_points(
-    players: list[object], player_scores: dict[int, float], slots: list[str]
-) -> float:
-    """Maximize active lineup points with positional eligibility and slot limits."""
+def best_fit_assignments(
+    players: list[object],
+    player_scores: dict[int, float],
+    slots: list[str],
+) -> dict[int, str]:
+    """Assign the highest-scoring eligible players to the available active slots."""
     slot_holders: dict[int, int] = {}
     player_by_id = {
         getattr(player, "playerId", None): player
@@ -863,7 +865,89 @@ def best_fit_points(
     )
     for player_id in ordered_ids:
         place(player_id, set())
-    return sum(player_scores[player_id] for player_id in set(slot_holders.values()))
+    return {
+        player_id: slots[slot_index]
+        for slot_index, player_id in slot_holders.items()
+    }
+
+
+def best_fit_points(
+    players: list[object], player_scores: dict[int, float], slots: list[str]
+) -> float:
+    """Return the points assigned to active slots by the eligibility optimizer."""
+    assignments = best_fit_assignments(players, player_scores, slots)
+    return sum(player_scores[player_id] for player_id in assignments)
+
+
+def lineup_assignments_by_date(
+    roster: list[object],
+    candidates: dict[int, OutlookCandidate],
+    slots: list[str],
+    daily_lineups: bool,
+) -> dict[date, dict[int, str]]:
+    """Return the ESPN-eligible active lineup assignment for each scheduled date."""
+    dates = sorted({
+        game_date
+        for player in roster
+        if getattr(player, "playerId", None) in candidates
+        for game_date in candidates[getattr(player, "playerId")].game_dates
+    })
+    if not dates:
+        return {}
+
+    if not daily_lineups:
+        scores = {
+            getattr(player, "playerId"): candidates[getattr(player, "playerId")].estimated_points
+            for player in roster
+            if getattr(player, "playerId", None) in candidates
+            and candidates[getattr(player, "playerId")].lineup_slot != "IR"
+        }
+        weekly_assignments = best_fit_assignments(roster, scores, slots)
+        return {game_date: weekly_assignments for game_date in dates}
+
+    assignments_by_date: dict[date, dict[int, str]] = {}
+    for game_date in dates:
+        daily_scores = {}
+        for player in roster:
+            player_id = getattr(player, "playerId", None)
+            candidate = candidates.get(player_id)
+            if candidate is None or candidate.lineup_slot == "IR":
+                continue
+            probability = candidate.game_probabilities.get(game_date, 0.0)
+            if probability > 0 and candidate.blended_avg > 0:
+                daily_scores[player_id] = candidate.blended_avg * probability
+        assignments_by_date[game_date] = best_fit_assignments(
+            roster, daily_scores, slots
+        )
+    return assignments_by_date
+
+
+def pickup_lineup_game_usage(
+    player_id: int,
+    roster: list[object],
+    candidates: dict[int, OutlookCandidate],
+    slots: list[str],
+    daily_lineups: bool,
+) -> tuple[int, int]:
+    """Return active-lineup games and expected-available scheduled games for a pickup."""
+    candidate = candidates.get(player_id)
+    if candidate is None:
+        return 0, 0
+    available_dates = [
+        game_date
+        for game_date, probability in candidate.game_probabilities.items()
+        if probability > 0
+    ]
+    if not slots:
+        return len(available_dates), len(available_dates)
+    assignments = lineup_assignments_by_date(
+        roster, candidates, slots, daily_lineups
+    )
+    active_games = sum(
+        player_id in assignments.get(game_date, {})
+        for game_date in available_dates
+    )
+    return active_games, len(available_dates)
 
 
 def lineup_week_points(
@@ -920,7 +1004,8 @@ def _best_swap(
     daily_lineups: bool,
     excluded_add_ids: set[int],
     eligible_drop_ids: set[int] | None = None,
-) -> tuple[float, object, object, float] | None:
+    lineup_blocked_add_ids: set[int] | None = None,
+) -> tuple[float, object, object, float, int, int] | None:
     best = None
     best_key = None
     roster_ids = {getattr(player, "playerId", None) for player in roster}
@@ -943,6 +1028,13 @@ def _best_swap(
             drop_id = getattr(drop_player, "playerId", None)
             hypothetical = [player for player in roster if getattr(player, "playerId", None) != drop_id]
             hypothetical.append(add_player)
+            active_games, available_games = pickup_lineup_game_usage(
+                add_id, hypothetical, candidate_data, slots, daily_lineups
+            )
+            if available_games <= 0 or active_games < available_games:
+                if lineup_blocked_add_ids is not None:
+                    lineup_blocked_add_ids.add(add_id)
+                continue
             after_points = lineup_week_points(
                 hypothetical, candidate_data, slots, daily_lineups
             )
@@ -955,7 +1047,7 @@ def _best_swap(
             )
             if best_key is None or key > best_key:
                 best_key = key
-                best = (gain, add_player, drop_player, after_points)
+                best = (gain, add_player, drop_player, after_points, active_games, available_games)
     return best
 
 
@@ -1081,6 +1173,15 @@ def render_next_week_outlook(
         lines.extend(["", "Could not compare pickups because the roster data is empty."])
         return "\n".join(lines)
 
+    if not slots:
+        lines.extend([
+            "",
+            "**Data warning:** ESPN active-slot settings and player eligibility are required to verify "
+            "that a pickup can enter your lineup for every available game. No pickup recommendations "
+            "were generated because lineup fit could not be verified.",
+        ])
+        return "\n".join(lines)
+
     missing_roster_rates = [
         candidate.name
         for candidate in roster_candidates.values()
@@ -1150,6 +1251,7 @@ def render_next_week_outlook(
     virtual_roster = list(active_roster)
     selected = []
     used_add_ids: set[int] = set()
+    lineup_blocked_add_ids: set[int] = set()
 
     # Greedily simulate a bundle of up to three distinct pickups. Each subsequent move
     # is evaluated against the roster after the prior hypothetical move, so the same
@@ -1157,12 +1259,12 @@ def render_next_week_outlook(
     for _ in range(3):
         best = _best_swap(
             virtual_roster, candidate_players, candidate_data, baseline,
-            slots, daily_lineups, used_add_ids, roster_ids,
+            slots, daily_lineups, used_add_ids, roster_ids, lineup_blocked_add_ids,
         )
         if best is None or best[0] <= 0.05:
             break
-        gain, add_player, drop_player, after_points = best
-        selected.append((gain, add_player, drop_player, after_points, True))
+        gain, add_player, drop_player, after_points, active_games, available_games = best
+        selected.append((gain, add_player, drop_player, after_points, active_games, available_games, True))
         virtual_roster = [
             player for player in virtual_roster
             if getattr(player, "playerId", None) != getattr(drop_player, "playerId", None)
@@ -1176,12 +1278,12 @@ def render_next_week_outlook(
     while len(selected) < 3:
         best = _best_swap(
             virtual_roster, candidate_players, candidate_data, baseline,
-            slots, daily_lineups, used_add_ids, roster_ids,
+            slots, daily_lineups, used_add_ids, roster_ids, lineup_blocked_add_ids,
         )
         if best is None:
             break
-        gain, add_player, drop_player, after_points = best
-        selected.append((gain, add_player, drop_player, after_points, False))
+        gain, add_player, drop_player, after_points, active_games, available_games = best
+        selected.append((gain, add_player, drop_player, after_points, active_games, available_games, False))
         used_add_ids.add(getattr(add_player, "playerId"))
         candidate_players = [
             player for player in candidate_players
@@ -1196,16 +1298,24 @@ def render_next_week_outlook(
         if not eligible_drops:
             lines.extend([
                 "",
-                "No eligible drop candidate remains. Roster players above 50% ownership, "
-                "above 30 FPPG, or missing ownership data are protected from drop recommendations.",
+                "No eligible drop candidate remains under the 26 Model FPPG drop threshold.",
             ])
         else:
-            lines.extend(["", "No eligible positive roster improvements were identified."])
+            lines.extend([
+                "",
+                "No pickup/drop pair was found that improves the projected lineup while allowing the pickup "
+                "to use every expected-available game.",
+            ])
+        if lineup_blocked_add_ids:
+            lines.append(
+                f"{len(lineup_blocked_add_ids)} waiver candidates were excluded because at least one "
+                "expected-available game would be benched by your active-slot limits."
+            )
         return "\n".join(lines)
 
     news_ids = [
         getattr(add_player, "playerId", None)
-        for _, add_player, _, _, _ in selected
+        for _, add_player, _, _, _, _, _ in selected
         if getattr(add_player, "playerId", None) is not None
     ]
     news_by_id = {}
@@ -1222,11 +1332,11 @@ def render_next_week_outlook(
 
     lines.extend([
         "",
-        "| Priority | Pickup | Owned | Pickup est. pts | Consider dropping | Drop est. pts | Team lineup gain | Games (expected) | Model FPPG | L15 | Injury | Confidence |",
-        "|---:|---|---:|---:|---|---:|---:|---:|---:|---:|---|---|",
+        "| Priority | Pickup | Owned | Pickup est. pts | Consider dropping | Drop est. pts | Team lineup gain | Games (expected) | Active lineup games | Model FPPG | L15 | Injury | Confidence |",
+        "|---:|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---|---|",
     ])
 
-    for index, (gain, add_player, drop_player, after_points, is_upgrade) in enumerate(selected, start=1):
+    for index, (gain, add_player, drop_player, after_points, active_games, available_games, is_upgrade) in enumerate(selected, start=1):
         add = candidate_data[getattr(add_player, "playerId")]
         drop = candidate_data[getattr(drop_player, "playerId")]
         label = f"**{add.name}**" if is_upgrade else f"{add.name} (watchlist)"
@@ -1237,11 +1347,12 @@ def render_next_week_outlook(
         f"| {add.estimated_points:.1f} | {drop.name} "
             f"| {drop.estimated_points:.1f} | **{marker}{gain:.1f}** "
             f"| {len(add.game_dates)} ({add.expected_games:.1f}) "
+            f"| {active_games}/{available_games} (0 sit) "
             f"| {display_average(add.blended_avg)} | {display_average(add.last_15)} "
             f"| {add.injury} | {add.confidence} |"
         )
 
-    positive_count = sum(1 for item in selected if item[4])
+    positive_count = sum(1 for item in selected if item[6])
     lines.extend(["", "### Why these pickups rank highest", ""])
     if positive_count:
         lines.append(
@@ -1255,7 +1366,7 @@ def render_next_week_outlook(
             "mislabelled as upgrades."
         )
 
-    for index, (gain, add_player, drop_player, after_points, is_upgrade) in enumerate(selected, start=1):
+    for index, (gain, add_player, drop_player, after_points, active_games, available_games, is_upgrade) in enumerate(selected, start=1):
         add = candidate_data[getattr(add_player, "playerId")]
         drop = candidate_data[getattr(drop_player, "playerId")]
         game_text = ", ".join(
@@ -1269,6 +1380,8 @@ def render_next_week_outlook(
             f"{'Adds' if is_upgrade else 'Would add'} **{gain:+.1f} projected team points** "
             f"over {drop.name} after lineup-slot optimization. {len(add.game_dates)} scheduled "
             f"games ({game_text}); {add.expected_games:.1f} expected playable games. "
+            f"Lineup fit: {active_games}/{available_games} expected-available games in an active slot, "
+            "with no benching caused by active-slot limits. "
             f"Model FPPG {display_average(add.blended_avg)} "
             f"(ESPN projection {display_average(add.projected_avg)}, "
             f"season {display_average(add.season_avg)}, "
@@ -1290,7 +1403,9 @@ def render_next_week_outlook(
         "",
         "*Model FPPG uses ESPN's league-specific projected FPPG when present, then season average; "
         "recent 7/15/30-day splits are fallback inputs and trend context, not hard eligibility rules. "
-        "Injury availability is estimated per scheduled game. Daily leagues optimize each date's "
+        "Pickup candidates are recommended only when ESPN position eligibility and active-slot limits "
+        "allow them to occupy an active lineup slot on every game date they are expected to be available. "
+        "Daily leagues optimize each date's "
         "active slots; scoring-period-lock leagues optimize one weekly lineup. The scan covers up "
         f"to {FREE_AGENT_POOL_SIZE} ESPN free agents.*",
         "",
