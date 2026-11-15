@@ -565,7 +565,7 @@ def render_next_week_outlook(
 
     if not roster_candidates:
         lines.extend(["", "Could not compare pickups because the roster data is empty."])
-        return "\\n".join(lines)
+        return "\n".join(lines)
 
     if nba_players and schedule_pct < 80:
         lines.extend([
@@ -574,7 +574,7 @@ def render_next_week_outlook(
             "waiver rankings. The report stopped rather than treating missing schedules as zero games. "
             "Check the workflow log and ESPN player-card responses before acting.",
         ])
-        return "\\n".join(lines)
+        return "\n".join(lines)
 
     candidate_players = []
     candidate_data = dict(roster_candidates)
@@ -594,7 +594,7 @@ def render_next_week_outlook(
             "No free agents in the returned ESPN pool have both a scheduled game next week "
             "and a usable points estimate.",
         ])
-        return "\\n".join(lines)
+        return "\n".join(lines)
 
     baseline = lineup_week_points(active_roster, candidate_data, slots, daily_lineups)
     virtual_roster = list(active_roster)
@@ -640,7 +640,7 @@ def render_next_week_outlook(
 
     if not selected:
         lines.extend(["", "No eligible positive roster improvements were identified."])
-        return "\\n".join(lines)
+        return "\n".join(lines)
 
     news_ids = [
         getattr(add_player, "playerId", None)
@@ -734,7 +734,7 @@ def render_next_week_outlook(
         "*This is a short-term points-league estimate. Role changes, late injury news, and actual "
         "lineup decisions can change the result; no roster transactions are submitted.*",
     ])
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 def render_report(league: League, today: date) -> str:
     monday, sunday = week_bounds(today)
