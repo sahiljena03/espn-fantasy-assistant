@@ -11,6 +11,7 @@ from main import (
     EASTERN,
     OutlookCandidate,
     as_date,
+    best_fit_assignments,
     best_fit_points,
     blended_player_average,
     free_agent_rejection_reason,
@@ -19,6 +20,8 @@ from main import (
     load_lineup_configuration,
     parse_espn_injury_signals,
     parse_espn_news_signals,
+    pickup_lineup_game_usage,
+    player_can_fill_slot,
     minutes_opportunity_watch,
     render_team_schedule_targets,
     team_game_counts,
@@ -129,6 +132,72 @@ class WaiverModelTests(unittest.TestCase):
             for batch in fetched_batches
         ))
 
+
+    def test_utility_slot_requires_explicit_espn_eligibility(self):
+        guard_only = FakePlayer(1, "PG", ["PG", "G"])
+        utility_eligible = FakePlayer(2, "PG", ["PG", "G", "UT"])
+        self.assertFalse(player_can_fill_slot(guard_only, "UT"))
+        self.assertTrue(player_can_fill_slot(utility_eligible, "UT"))
+
+    def test_pickup_must_fit_every_expected_available_game_after_drop(self):
+        first_day = date(2026, 11, 16)
+        second_day = date(2026, 11, 18)
+        game_dates = [first_day, second_day]
+        game_probabilities = {first_day: 1.0, second_day: 1.0}
+
+        pg = FakePlayer(1, "PG", ["PG", "G", "UT"])
+        wing = FakePlayer(2, "SF", ["SF", "F", "UT"])
+        pickup = FakePlayer(3, "PF", ["PF", "F", "UT"])
+
+        def make_candidate(name, position, average):
+            return OutlookCandidate(
+                name=name,
+                position=position,
+                nba_team="BOS",
+                injury="ACTIVE",
+                expected_return=None,
+                game_dates=game_dates,
+                game_probabilities=game_probabilities,
+                season_avg=average,
+                projected_avg=average,
+                last_7=average,
+                last_15=average,
+                last_30=average,
+                blended_avg=average,
+                injury_multiplier=1.0,
+                expected_games=2.0,
+                estimated_points=average * 2.0,
+                percent_owned=10.0,
+                percent_started=5.0,
+                latest_news="",
+                pos_rank=50,
+                data_sources=5,
+                confidence="High",
+                lineup_slot="",
+            )
+
+        candidates = {
+            1: make_candidate("Starting point guard", "PG", 30.0),
+            2: make_candidate("Starting wing", "SF", 28.0),
+            3: make_candidate("Waiver forward", "PF", 25.0),
+        }
+
+        active_games_with_full_roster = pickup_lineup_game_usage(
+            3, [pg, wing, pickup], candidates, ["PG", "UT"], True
+        )
+        self.assertEqual(active_games_with_full_roster, (0, 2))
+
+        active_games_after_dropping_wing = pickup_lineup_game_usage(
+            3, [pg, pickup], candidates, ["PG", "UT"], True
+        )
+        self.assertEqual(active_games_after_dropping_wing, (2, 2))
+
+        assignments = best_fit_assignments(
+            [pg, pickup],
+            {1: 60.0, 3: 50.0},
+            ["PG", "UT"],
+        )
+        self.assertEqual(assignments, {1: "PG", 3: "UT"})
 
     def test_slot_optimizer_uses_position_eligibility(self):
         pg_weak = FakePlayer(1, "PG", ["PG", "G", "UT"])
