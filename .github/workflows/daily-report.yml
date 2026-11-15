@@ -26,7 +26,7 @@ jobs:
           scheduled = now.hour == 9 and now.minute == 45
           print(f"Local time: {now.isoformat()}; scheduled run: {scheduled}")
           with open("${GITHUB_OUTPUT}", "a", encoding="utf-8") as output:
-              output.write(f"run_report={str(scheduled).lower()}\\n")
+              output.write(f"run_report={str(scheduled).lower()}\n")
           PY
 
       - name: Check out repository
