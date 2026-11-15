@@ -597,8 +597,10 @@ def minutes_opportunity_watch(
             continue
         status = str(signal.get("status", "") or "")
         status_upper = status.upper()
-        if status_upper in {"OUT", "INACTIVE", "INJURY RESERVE", "INJURED RESERVE", "IR", "ABSENCE NEWS"}:
+        if status_upper in {"OUT", "INACTIVE", "INJURY RESERVE", "INJURED RESERVE", "IR"}:
             status_weight = 3.0
+        elif status_upper == "ABSENCE NEWS":
+            status_weight = 2.0
         elif "DOUBTFUL" in status_upper:
             status_weight = 2.5
         elif "REST/LOAD-MANAGEMENT" in status_upper:
@@ -633,8 +635,10 @@ def minutes_opportunity_watch(
                 "reasons": [],
                 "sources": [],
             })
+            detail = str(signal.get("detail", "") or "").replace("|", "/").strip()
+            detail_text = f", {detail[:72]}" if detail else ""
             reason = (
-                f"{signal['player_name']} ({status}) at {team_abbr}, "
+                f"{signal['player_name']} ({status}{detail_text}) at {team_abbr}, "
                 f"same position group"
             )
             if reason not in record["reasons"]:
@@ -663,7 +667,7 @@ def minutes_opportunity_watch(
         opportunities.sort(key=opportunity_sort_key, reverse=True)
         lines.extend([
             "",
-            "| Potential beneficiary | Team / Pos | Teammate availability signal | ESPN started | L15 vs season FPPG |",
+            "| Potential beneficiary | Team / Pos | Teammate availability signal | Fantasy started % | L15 vs season FPPG |",
             "|---|---|---|---:|---:|",
         ])
         for item in opportunities[:5]:
