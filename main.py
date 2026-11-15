@@ -29,7 +29,8 @@ class PlayerCandidate:
 
 
 def season_start_year(today: date) -> int:
-    return today.year if today.month >= 10 else today.year - 1
+    # ESPN basketball season IDs use the year the season ends (e.g. 2026–27 = 2027).
+    return today.year + 1 if today.month >= 10 else today.year
 
 
 def week_bounds(today: date) -> tuple[date, date]:
