@@ -772,27 +772,12 @@ def display_average(value: float | None) -> str:
 
 
 def is_protected_roster_player(candidate: OutlookCandidate) -> bool:
-    """Protect roster players with >50% ownership or >30 FPPG."""
-    credible_rates = [
-        candidate.projected_avg,
-        candidate.season_avg,
-        candidate.last_7 or 0.0,
-        candidate.last_15 or 0.0,
-        candidate.last_30 or 0.0,
-    ]
-    return (
-        candidate.percent_owned is None
-        or candidate.percent_owned > 50.0
-        or max(credible_rates, default=0.0) > 30.0
-    )
+    """Only roster players at 26+ model FPPG are protected from drops."""
+    return candidate.blended_avg <= 0 or candidate.blended_avg >= 26.0
 
 
 def free_agent_rejection_reason(candidate: OutlookCandidate) -> str | None:
-    """Apply the user's hard ownership and scoring limits to waiver additions."""
-    if candidate.percent_owned is None:
-        return "ownership unavailable"
-    if candidate.percent_owned > 50.0:
-        return "ownership above 50%"
+    """Apply the 30-FPPG pickup limit; ownership never blocks an addition."""
     peak_rate = max(
         candidate.projected_avg,
         candidate.season_avg,
@@ -1052,8 +1037,6 @@ def render_next_week_outlook(
     candidate_players = []
     candidate_data = dict(roster_candidates)
     rejected = {
-        "ownership unavailable": 0,
-        "ownership above 50%": 0,
         "FPPG above 30": 0,
         "no scoring average": 0,
         "no scheduled games": 0,
@@ -1079,15 +1062,15 @@ def render_next_week_outlook(
             free_agents, candidate_players, candidate_data, all_league_roster, today
         ),
         "",
-        f"**Waiver filters:** excluded {rejected['ownership above 50%']} players above 50% ownership, "
-        f"{rejected['FPPG above 30']} players above 30 FPPG, and "
-        f"{rejected['ownership unavailable']} players without verifiable ownership.",
+        f"**Pickup filters:** excluded {rejected['FPPG above 30']} players above 30 FPPG. "
+        "Ownership does not restrict pickups. Roster players are eligible to drop only when "
+        "their Model FPPG is below 26; players at 26+ are protected.",
     ])
 
     if not candidate_players:
         lines.extend([
             "",
-            "No free agents remain after the ownership, scoring, and schedule filters. "
+            "No free agents remain after the scoring and schedule filters. "
             "The report will not relax these rules to fill three recommendation slots.",
         ])
         return "\n".join(lines)
@@ -1179,7 +1162,8 @@ def render_next_week_outlook(
         marker = "+" if gain >= 0 else ""
         lines.append(
             f"| {index} | {label} ({add.position}, {add.nba_team}) "
-            f"| {add.percent_owned:.1f}% | {add.estimated_points:.1f} | {drop.name} "
+            f"| {f'{add.percent_owned:.1f}%' if add.percent_owned is not None else 'Unknown'} "
+        f"| {add.estimated_points:.1f} | {drop.name} "
             f"| {drop.estimated_points:.1f} | **{marker}{gain:.1f}** "
             f"| {len(add.game_dates)} ({add.expected_games:.1f}) "
             f"| {display_average(add.blended_avg)} | {display_average(add.last_15)} "
@@ -1311,8 +1295,10 @@ def render_report(league: League, today: date) -> str:
     ])
 
     comparisons = []
-    for free_agent in available:
-        for roster_player in roster_with_games:
+    eligible_pickups = [item for item in available if 0 < item.avg_points <= 30.0]
+    eligible_drops = [item for item in roster_with_games if 0 < item.avg_points < 26.0]
+    for free_agent in eligible_pickups:
+        for roster_player in eligible_drops:
             net = free_agent.projected_week_points - roster_player.projected_week_points
             if net > 0:
                 comparisons.append((net, free_agent, roster_player))
