@@ -20,6 +20,8 @@ from main import (
     parse_espn_injury_signals,
     parse_espn_news_signals,
     minutes_opportunity_watch,
+    render_team_schedule_targets,
+    team_game_counts,
     _best_swap,
 )
 
@@ -227,6 +229,66 @@ class WaiverModelTests(unittest.TestCase):
         self.assertEqual(signals[0]["team_abbr"], "BOS")
         self.assertEqual(signals[0]["status"], "OUT")
 
+
+    def test_team_game_counts_deduplicates_players_by_team(self):
+        gsw_schedule = {
+            "game_1": {"date": datetime(2026, 11, 16)},
+            "game_2": {"date": datetime(2026, 11, 18)},
+            "game_3": {"date": datetime(2026, 11, 20)},
+            "game_4": {"date": datetime(2026, 11, 22)},
+        }
+        nyk_schedule = {
+            "game_5": {"date": datetime(2026, 11, 17)},
+            "game_6": {"date": datetime(2026, 11, 21)},
+        }
+        players = [
+            SimpleNamespace(proTeam="GSW", schedule=gsw_schedule),
+            SimpleNamespace(proTeam="GSW", schedule=dict(gsw_schedule)),
+            SimpleNamespace(proTeam="NYK", schedule=nyk_schedule),
+            SimpleNamespace(proTeam="FA", schedule=gsw_schedule),
+        ]
+        counts = team_game_counts(
+            players,
+            date(2026, 11, 16),
+            date(2026, 11, 22),
+        )
+        self.assertEqual(counts, {"GSW": 4, "NYK": 2})
+
+    def test_team_schedule_report_separates_four_game_targets_and_two_game_avoids(self):
+        players = [
+            SimpleNamespace(
+                proTeam="GSW",
+                schedule={
+                    "a": {"date": datetime(2026, 11, 16)},
+                    "b": {"date": datetime(2026, 11, 18)},
+                    "c": {"date": datetime(2026, 11, 20)},
+                    "d": {"date": datetime(2026, 11, 22)},
+                },
+            ),
+            SimpleNamespace(
+                proTeam="NYK",
+                schedule={
+                    "e": {"date": datetime(2026, 11, 17)},
+                    "f": {"date": datetime(2026, 11, 21)},
+                },
+            ),
+            SimpleNamespace(
+                proTeam="BOS",
+                schedule={
+                    "g": {"date": datetime(2026, 11, 16)},
+                    "h": {"date": datetime(2026, 11, 18)},
+                    "i": {"date": datetime(2026, 11, 20)},
+                },
+            ),
+        ]
+        report = render_team_schedule_targets(
+            players,
+            date(2026, 11, 16),
+            date(2026, 11, 22),
+        )
+        self.assertIn("Target (4 games): GSW (4)", report)
+        self.assertIn("Avoid (2 games): NYK (2)", report)
+        self.assertNotIn("BOS", report)
 
     def test_minutes_watch_matches_out_teammate_to_same_position_free_agent(self):
         injured_player = SimpleNamespace(
