@@ -286,8 +286,8 @@ class WaiverModelTests(unittest.TestCase):
             date(2026, 11, 16),
             date(2026, 11, 22),
         )
-        self.assertIn("Target (4 games): GSW (4)", report)
-        self.assertIn("Avoid (2 games): NYK (2)", report)
+        self.assertIn("**Target (4 games):** GSW (4)", report)
+        self.assertIn("**Avoid (2 games):** NYK (2)", report)
         self.assertNotIn("BOS", report)
 
     def test_minutes_watch_matches_out_teammate_to_same_position_free_agent(self):
