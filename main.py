@@ -27,6 +27,27 @@ class PlayerCandidate:
     games_left: int
     projected_week_points: float
 
+@dataclass
+class OutlookCandidate:
+    name: str
+    position: str
+    nba_team: str
+    injury: str
+    expected_return: date | None
+    game_dates: list[date]
+    season_avg: float
+    projected_avg: float
+    last_7: float | None
+    last_15: float | None
+    last_30: float | None
+    blended_avg: float
+    injury_multiplier: float
+    estimated_points: float
+    percent_owned: float | None
+    percent_started: float | None
+    latest_news: str
+
+
 
 def season_start_year(today: date) -> int:
     # ESPN basketball season IDs use the year the season ends (e.g. 2026–27 = 2027).
@@ -89,6 +110,228 @@ def candidate_from_player(player: object, today: date, sunday: date) -> PlayerCa
         projected_week_points=average * games,
     )
 
+
+
+def next_week_bounds(today: date) -> tuple[date, date]:
+    days_until_monday = 7 - today.weekday()
+    next_monday = today + timedelta(days=days_until_monday)
+    return next_monday, next_monday + timedelta(days=6)
+
+
+def player_game_dates(player: object, start: date, end: date) -> list[date]:
+    schedule = getattr(player, "schedule", {}) or {}
+    dates = []
+    for game in schedule.values():
+        if isinstance(game, dict):
+            game_date_value = game.get("date")
+        else:
+            game_date_value = getattr(game, "date", None)
+        game_date = as_date(game_date_value)
+        if game_date is not None and start <= game_date <= end:
+            dates.append(game_date)
+    return sorted(set(dates))
+
+
+def recent_player_average(player: object, period: str) -> float | None:
+    stats = getattr(player, "stats", {}) or {}
+    year = getattr(player, "year", None)
+    keys = []
+    if year is not None:
+        keys.append(f"{year}_{period}")
+    keys.extend(key for key in stats if str(key).endswith(f"_{period}"))
+    for key in keys:
+        split = stats.get(key)
+        if not isinstance(split, dict):
+            continue
+        value = numeric(split.get("applied_avg", split.get("avg")), -1.0)
+        if value > 0:
+            return value
+    return None
+
+
+def injury_availability_multiplier(
+    player: object, game_dates: list[date]
+) -> tuple[str, date | None, float]:
+    status = str(getattr(player, "injuryStatus", "UNKNOWN") or "UNKNOWN").upper()
+    status = status.replace(" ", "_")
+    injured = bool(getattr(player, "injured", False))
+    expected_return = as_date(getattr(player, "expected_return_date", None))
+
+    status_factors = {
+        "ACTIVE": 1.0,
+        "PROBABLE": 0.95,
+        "QUESTIONABLE": 0.75,
+        "DAY_TO_DAY": 0.70,
+        "DOUBTFUL": 0.35,
+        "OUT": 0.10,
+        "INJURY_RESERVE": 0.05,
+        "INJURED_RESERVE": 0.05,
+        "IR": 0.05,
+    }
+    factor = status_factors.get(status, 0.65 if injured else 0.90)
+
+    if expected_return is not None and game_dates:
+        games_after_return = sum(game_date >= expected_return for game_date in game_dates)
+        factor = min(factor, games_after_return / len(game_dates))
+    elif injured and status in {"", "UNKNOWN", "ACTIVE"}:
+        factor = min(factor, 0.65)
+
+    return status, expected_return, max(0.0, min(1.0, factor))
+
+
+def blended_player_average(
+    projected: float,
+    season: float,
+    last_7: float | None,
+    last_15: float | None,
+    last_30: float | None,
+) -> float:
+    components = [
+        (projected, 0.35),
+        (season, 0.30),
+        (last_30 or 0.0, 0.15),
+        (last_15 or 0.0, 0.10),
+        (last_7 or 0.0, 0.10),
+    ]
+    available = [(value, weight) for value, weight in components if value > 0]
+    if not available:
+        return 0.0
+    total_weight = sum(weight for _, weight in available)
+    return sum(value * weight for value, weight in available) / total_weight
+
+
+def latest_player_news(player: object) -> str:
+    news = getattr(player, "news", []) or []
+    for item in news:
+        if isinstance(item, dict):
+            headline = str(item.get("headline", "") or "").strip()
+            if headline:
+                return headline.replace("|", "/")
+    return ""
+
+
+def outlook_candidate_from_player(
+    player: object, start: date, end: date
+) -> OutlookCandidate:
+    game_dates = player_game_dates(player, start, end)
+    season_avg = numeric(getattr(player, "avg_points", None))
+    projected_avg = numeric(getattr(player, "projected_avg_points", None))
+    last_7 = recent_player_average(player, "last_7")
+    last_15 = recent_player_average(player, "last_15")
+    last_30 = recent_player_average(player, "last_30")
+    blended_avg = blended_player_average(
+        projected_avg, season_avg, last_7, last_15, last_30
+    )
+    status, expected_return, injury_factor = injury_availability_multiplier(
+        player, game_dates
+    )
+    percent_owned_value = numeric(getattr(player, "percent_owned", None), -1.0)
+    percent_started_value = numeric(getattr(player, "percent_started", None), -1.0)
+
+    return OutlookCandidate(
+        name=str(getattr(player, "name", "Unknown")),
+        position=str(getattr(player, "position", "—")),
+        nba_team=str(getattr(player, "proTeam", "—")),
+        injury=status,
+        expected_return=expected_return,
+        game_dates=game_dates,
+        season_avg=season_avg,
+        projected_avg=projected_avg,
+        last_7=last_7,
+        last_15=last_15,
+        last_30=last_30,
+        blended_avg=blended_avg,
+        injury_multiplier=injury_factor,
+        estimated_points=blended_avg * len(game_dates) * injury_factor,
+        percent_owned=percent_owned_value if percent_owned_value >= 0 else None,
+        percent_started=percent_started_value if percent_started_value >= 0 else None,
+        latest_news=latest_player_news(player),
+    )
+
+
+def display_average(value: float | None) -> str:
+    return f"{value:.1f}" if value is not None and value > 0 else "—"
+
+
+def render_next_week_outlook(
+    team: object, free_agents: list[object], today: date
+) -> str:
+    start, end = next_week_bounds(today)
+    roster_ids = {
+        getattr(player, "playerId", None) for player in getattr(team, "roster", [])
+    }
+    candidates = []
+    for player in free_agents:
+        if getattr(player, "playerId", None) in roster_ids:
+            continue
+        candidate = outlook_candidate_from_player(player, start, end)
+        if candidate.game_dates and candidate.blended_avg > 0 and candidate.estimated_points > 0:
+            candidates.append(candidate)
+
+    candidates.sort(
+        key=lambda item: (
+            item.estimated_points,
+            item.blended_avg,
+            len(item.game_dates),
+            item.percent_started or 0.0,
+        ),
+        reverse=True,
+    )
+
+    lines = [
+        f"## Next-week waiver outlook ({start.strftime('%b %-d')}–{end.strftime('%b %-d')})",
+        "",
+        "Top three free-agent priorities for the upcoming Monday–Sunday scoring week. "
+        "The estimate blends ESPN projected and season FPPG with recent 30/15/7-day "
+        "averages, multiplies by scheduled games, and discounts for reported injury risk.",
+        "",
+        "| Priority | Player | Injury | Games (dates) | Season FPPG | L7 | L15 | L30 | ESPN proj. FPPG | Est. points* | Owned |",
+        "|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+
+    if not candidates:
+        lines.append("| — | No qualifying free agents found in the returned pool | | | | | | | | | |")
+    else:
+        for index, item in enumerate(candidates[:3], start=1):
+            game_text = f"{len(item.game_dates)} ({', '.join(d.strftime('%a %-d') for d in item.game_dates)})"
+            owned_text = f"{item.percent_owned:.1f}%" if item.percent_owned is not None else "—"
+            lines.append(
+                f"| {index} | **{item.name}** ({item.position}, {item.nba_team}) "
+                f"| {item.injury} | {game_text} | {item.season_avg:.1f} "
+                f"| {display_average(item.last_7)} | {display_average(item.last_15)} "
+                f"| {display_average(item.last_30)} | {item.projected_avg:.1f} "
+                f"| **{item.estimated_points:.1f}** | {owned_text} |"
+            )
+
+        lines.extend(["", "### Pickup priorities and context", ""])
+        for index, item in enumerate(candidates[:3], start=1):
+            game_text = ", ".join(d.strftime("%a %-d") for d in item.game_dates)
+            details = (
+                f"{len(item.game_dates)} games ({game_text}); blended estimate "
+                f"{item.blended_avg:.1f} FPPG before injury adjustment; "
+                f"{item.estimated_points:.1f} estimated points after a "
+                f"{item.injury_multiplier:.0%} availability factor."
+            )
+            if item.last_7 is not None and item.season_avg > 0:
+                trend = item.last_7 - item.season_avg
+                details += f" Last-7-day average is {trend:+.1f} vs. season average."
+            if item.expected_return is not None:
+                details += f" ESPN expected return: {item.expected_return.strftime('%b %-d')}."
+            if item.percent_started is not None:
+                details += f" Started in {item.percent_started:.1f}% of leagues."
+            lines.append(f"{index}. **{item.name}:** {details}")
+            if item.latest_news:
+                lines.append(f"   - Latest ESPN news: {item.latest_news}")
+
+    lines.extend([
+        "",
+        "*Est. points are directional, not guaranteed. L7/L15/L30 are ESPN recent-window "
+        "per-game averages; 'ESPN proj. FPPG' is ESPN's season projection. Injury factors "
+        "are conservative heuristics, not medical predictions. Injury status and news "
+        "reflect the data returned by ESPN at report time. The scan is limited to the "
+        f"top {FREE_AGENT_POOL_SIZE} free agents returned by ESPN, so deeper options may be missed.*",
+    ])
+    return "\n".join(lines)
 
 def render_report(league: League, today: date) -> str:
     monday, sunday = week_bounds(today)
@@ -192,6 +435,9 @@ def render_report(league: League, today: date) -> str:
             )
     else:
         lines.append("- No roster players with a remaining game were identified.")
+
+    if today.weekday() in (5, 6):
+        lines.extend(["", render_next_week_outlook(team, free_agents, today)])
 
     lines.extend([
         "",
