@@ -1,0 +1,2 @@
+week_start,week_end,recommendation_report_url,report_status,recommendations_evaluated,mean_absolute_forecast_error,mean_signed_forecast_error,average_realized_net_gain,positive_realized_swap_rate,notes
+2026-11-09,2026-11-15,,not_evaluable,0,,,,,"No Saturday/Sunday recommendation report for the Nov 9-15 scoring week was found in the repository Actions history. The available Nov 15 report forecasts Nov 16-22, which had not completed as of this evaluation. Actuals and accuracy metrics are therefore unavailable; do not substitute season averages."
