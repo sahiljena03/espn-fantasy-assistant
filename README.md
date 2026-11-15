@@ -51,7 +51,7 @@ The weekend model evaluates the effect of each add/drop on the team's projected 
 5. Test each available player against each droppable roster player. Greedily simulate up to three positive swaps, recalculating the roster after each one. This prevents multiple waiver suggestions from claiming the same drop-slot improvement.
 6. If fewer than three positive moves exist, display the best remaining marginal options as watchlist alternatives with their estimated net impact. They are not mislabeled as upgrades.
 
-Current limitations: ESPN projections and injury statuses can lag; expected-return dates are not guarantees; the model does not yet ingest a separate minutes/rotation projection, opponent defensive matchup ratings, Vegas totals, or external injury feeds. The waiver scan is limited to the top `{FREE_AGENT_POOL_SIZE}` free agents returned by ESPN, and no player can be valued perfectly without a validated projection/backtest dataset. The report is intended as decision support, not an automatic transaction engine.
+Current limitations: ESPN projections and injury statuses can lag; expected-return dates are not guarantees; the model does not yet ingest a separate minutes/rotation projection, opponent defensive matchup ratings, Vegas totals, or external injury feeds. The waiver scan is limited to the top `500` free agents returned by ESPN, and no player can be valued perfectly without a validated projection/backtest dataset. The report is intended as decision support, not an automatic transaction engine.
 
 ### Design references
 
