@@ -339,7 +339,8 @@ def render_next_week_outlook(
         candidate for candidate in roster_candidates if candidate.lineup_slot != "IR"
     ]
     if not droppable_roster:
-        droppable_roster = roster_candidates
+        lines.append("All roster players are in IR slots, so there is no appropriate drop candidate.")
+        return "\\n".join(lines)
     weakest_roster_player = min(droppable_roster, key=drop_priority_key)
     comparisons = []
     for player in free_agents:
