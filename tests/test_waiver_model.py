@@ -18,6 +18,7 @@ from main import (
     hydrate_free_agents,
     is_protected_roster_player,
     load_lineup_configuration,
+    lineup_week_points,
     parse_espn_injury_signals,
     parse_espn_news_signals,
     pickup_lineup_game_usage,
@@ -334,6 +335,73 @@ class WaiverModelTests(unittest.TestCase):
         self.assertEqual(signals[0]["status"], "OUT")
 
 
+    def test_high_projected_three_game_pickup_can_beat_lower_four_game_pickup(self):
+        monday = date(2026, 11, 16)
+        tuesday = date(2026, 11, 17)
+        wednesday = date(2026, 11, 18)
+        thursday = date(2026, 11, 19)
+        friday = date(2026, 11, 20)
+        saturday = date(2026, 11, 21)
+        sunday = date(2026, 11, 22)
+
+        drop_dates = [tuesday, thursday, saturday, sunday]
+        three_game_dates = [monday, wednesday, friday]
+        four_game_dates = [tuesday, thursday, saturday, sunday]
+
+        def make_candidate(name, player_dates, average):
+            return OutlookCandidate(
+                name=name,
+                position="PG",
+                nba_team="BOS",
+                injury="ACTIVE",
+                expected_return=None,
+                game_dates=player_dates,
+                game_probabilities={game_date: 1.0 for game_date in player_dates},
+                season_avg=average,
+                projected_avg=average,
+                last_7=average,
+                last_15=average,
+                last_30=average,
+                blended_avg=average,
+                injury_multiplier=1.0,
+                expected_games=float(len(player_dates)),
+                estimated_points=average * len(player_dates),
+                percent_owned=10.0,
+                percent_started=5.0,
+                latest_news="",
+                pos_rank=50,
+                data_sources=5,
+                confidence="High",
+                lineup_slot="",
+            )
+
+        drop_player = FakePlayer(1, "PG", ["PG", "G", "UT"])
+        three_game_pickup = FakePlayer(2, "PG", ["PG", "G", "UT"])
+        four_game_pickup = FakePlayer(3, "PG", ["PG", "G", "UT"])
+        candidate_data = {
+            1: make_candidate("Roster player", drop_dates, 15.0),
+            2: make_candidate("High scoring three-game player", three_game_dates, 26.0),
+            3: make_candidate("Lower scoring four-game player", four_game_dates, 17.0),
+        }
+        base_points = lineup_week_points(
+            [drop_player], candidate_data, ["UT"], True
+        )
+        best = _best_swap(
+            [drop_player],
+            [three_game_pickup, four_game_pickup],
+            candidate_data,
+            base_points,
+            ["UT"],
+            True,
+            set(),
+            {1},
+            set(),
+        )
+        self.assertIsNotNone(best)
+        self.assertEqual(best[1].playerId, 2)
+        self.assertEqual(best[4:], (3, 3))
+        self.assertGreater(best[0], 0.0)
+
     def test_team_game_counts_deduplicates_players_by_team(self):
         gsw_schedule = {
             "game_1": {"date": datetime(2026, 11, 16, 17)},
@@ -391,8 +459,8 @@ class WaiverModelTests(unittest.TestCase):
             date(2026, 11, 22),
         )
         self.assertIn("**Target (4 games):** GSW (4)", report)
+        self.assertIn("**Consider (3 games):** BOS (3)", report)
         self.assertIn("**Avoid (2 games):** NYK (2)", report)
-        self.assertNotIn("BOS", report)
 
     def test_minutes_watch_matches_out_teammate_to_same_position_free_agent(self):
         injured_player = SimpleNamespace(
