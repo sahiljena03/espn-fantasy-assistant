@@ -10,7 +10,7 @@ Daily, read-only waiver analysis for **Scottie on the Spectrum** (ESPN league ID
 - Compares waiver options against lower-value players on your roster.
 - Includes position, NBA team, ESPN injury designation, fantasy points per game, and remaining games.
 - Displays no more than **5 add/drop comparisons**, matching the league's weekly move limit.
-- On **Saturday and Sunday**, adds a next-week outlook with the top 3 waiver priorities, scheduled game dates, season and recent 7/15/30-day FPPG averages, ESPN projected FPPG, injury status/expected return date, ownership, and available ESPN player news.
+- On **Saturday and Sunday**, compares waiver pickups directly with the weakest projected player on your roster for the upcoming week and ranks up to 3 positive net upgrades. It includes scheduled games, season/recent 7/15/30-day FPPG, ESPN projections, injury/return-date adjustments, position rank, ownership, news, and a data-confidence label. If fewer than 3 positive upgrades exist, it says so and shows the closest alternatives separately.
 - Publishes the report in the GitHub Actions run summary.
 
 **It never executes roster transactions.** Check ESPN for late injury news, starting status, and your actual remaining acquisition count.
@@ -40,7 +40,7 @@ For the current week, estimated remaining points are:
 
 `FPPG × scheduled NBA games remaining this week`
 
-On Saturdays and Sundays, the next-week outlook blends ESPN projected FPPG (35%), season FPPG (30%), recent 30-day average (15%), recent 15-day average (10%), and recent 7-day average (10%). Missing averages are omitted and the remaining weights are normalized. The blended FPPG is multiplied by next week's scheduled games and a conservative availability factor based on ESPN injury status and expected return date. The report also shows recent averages, ESPN's projected FPPG, ownership, and available player-news headlines.
+On Saturdays and Sundays, the next-week outlook compares each returned free agent against the roster player with the lowest estimated points for that week. It ranks by net gain (pickup estimate minus drop-candidate estimate), rather than by a free agent's standalone points total. It uses the same FPPG blend: ESPN projected FPPG (35%), season FPPG (30%), recent 30-day average (15%), recent 15-day average (10%), and recent 7-day average (10%). Missing averages are omitted and remaining weights normalized, so a player does not need every data field to be considered. It then estimates scheduled games and applies an injury/expected-return adjustment. Positional rank helps break ties; ownership, start rate, recent trends, and ESPN news are shown as context. The report labels data confidence based on available stat splits and schedule data. The free-agent scan was increased to 500 players for the deep league.
 
 This is a weekly-streaming heuristic, not a full model of minutes, role changes, opponent difficulty, or individualized injury probabilities. Injury designations and news can lag. The waiver pool is limited to the top 250 players returned by ESPN's API.
 
