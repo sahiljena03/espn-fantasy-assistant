@@ -323,7 +323,7 @@ class WaiverModelTests(unittest.TestCase):
         self.assertEqual(blended_player_average(0.0, 18.0, None, None, None), 18.0)
         self.assertAlmostEqual(blended_player_average(0.0, 0.0, 7.0, 8.0, 9.0), 8.3333333333)
 
-    def test_pickup_ownership_and_scoring_guardrails(self):
+    def test_pickup_ownership_is_informational_and_drop_limit_is_26_fppg(self):
         base = {
             "name": "Test Player",
             "position": "PG",
@@ -356,22 +356,18 @@ class WaiverModelTests(unittest.TestCase):
             return OutlookCandidate(**values)
 
         self.assertIsNone(free_agent_rejection_reason(make_candidate()))
-        self.assertEqual(
-            free_agent_rejection_reason(make_candidate(percent_owned=50.1)),
-            "ownership above 50%",
-        )
+        self.assertIsNone(free_agent_rejection_reason(make_candidate(percent_owned=99.9)))
+        self.assertIsNone(free_agent_rejection_reason(make_candidate(percent_owned=None)))
         self.assertEqual(
             free_agent_rejection_reason(make_candidate(projected_avg=31.0)),
             "FPPG above 30",
         )
-        self.assertEqual(
-            free_agent_rejection_reason(make_candidate(percent_owned=None)),
-            "ownership unavailable",
-        )
-        self.assertTrue(is_protected_roster_player(make_candidate(percent_owned=92.0)))
-        self.assertTrue(is_protected_roster_player(make_candidate(season_avg=31.0)))
-        self.assertTrue(is_protected_roster_player(make_candidate(percent_owned=None)))
-        self.assertFalse(is_protected_roster_player(make_candidate(percent_owned=12.0)))
+        self.assertFalse(is_protected_roster_player(make_candidate(percent_owned=99.9)))
+        self.assertFalse(is_protected_roster_player(make_candidate(percent_owned=None)))
+        self.assertFalse(is_protected_roster_player(make_candidate(blended_avg=25.99)))
+        self.assertTrue(is_protected_roster_player(make_candidate(blended_avg=26.0)))
+        self.assertTrue(is_protected_roster_player(make_candidate(blended_avg=29.0)))
+        self.assertTrue(is_protected_roster_player(make_candidate(blended_avg=0.0)))
 
 
 if __name__ == "__main__":
