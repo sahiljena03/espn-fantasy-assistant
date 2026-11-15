@@ -199,6 +199,35 @@ class WaiverModelTests(unittest.TestCase):
         )
         self.assertEqual(assignments, {1: "PG", 3: "UT"})
 
+        low_value_roster_player = FakePlayer(4, "SF", ["SF", "F", "UT"])
+        candidates[4] = make_candidate("Drop candidate", "SF", 15.0)
+        blocked = _best_swap(
+            [pg, wing, low_value_roster_player],
+            [pickup],
+            candidates,
+            0.0,
+            ["PG", "UT"],
+            True,
+            set(),
+            {4},
+            set(),
+        )
+        self.assertIsNone(blocked)
+
+        fully_playable = _best_swap(
+            [pg, low_value_roster_player],
+            [pickup],
+            candidates,
+            0.0,
+            ["PG", "UT"],
+            True,
+            set(),
+            {4},
+            set(),
+        )
+        self.assertIsNotNone(fully_playable)
+        self.assertEqual(fully_playable[4:], (2, 2))
+
     def test_slot_optimizer_uses_position_eligibility(self):
         pg_weak = FakePlayer(1, "PG", ["PG", "G", "UT"])
         pg_strong = FakePlayer(2, "PG", ["PG", "G", "UT"])
