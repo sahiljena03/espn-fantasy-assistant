@@ -163,16 +163,24 @@ def injury_availability_multiplier(
         "QUESTIONABLE": 0.75,
         "DAY_TO_DAY": 0.70,
         "DOUBTFUL": 0.35,
-        "OUT": 0.10,
-        "INJURY_RESERVE": 0.05,
-        "INJURED_RESERVE": 0.05,
-        "IR": 0.05,
+        "OUT": 0.0,
+        "INJURY_RESERVE": 0.0,
+        "INJURED_RESERVE": 0.0,
+        "IR": 0.0,
+        "INACTIVE": 0.0,
+        "SUSPENDED": 0.0,
     }
     factor = status_factors.get(status, 0.65 if injured else 0.90)
 
     if expected_return is not None and game_dates:
         games_after_return = sum(game_date >= expected_return for game_date in game_dates)
-        factor = min(factor, games_after_return / len(game_dates))
+        return_fraction = games_after_return / len(game_dates)
+        if status in {"OUT", "INJURY_RESERVE", "INJURED_RESERVE", "IR"}:
+            factor = return_fraction * 0.90
+        else:
+            factor = min(factor, return_fraction)
+    elif status in {"OUT", "INJURY_RESERVE", "INJURED_RESERVE", "IR", "INACTIVE", "SUSPENDED"}:
+        factor = 0.0
     elif injured and status in {"", "UNKNOWN", "ACTIVE"}:
         factor = min(factor, 0.65)
 
