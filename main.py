@@ -305,9 +305,9 @@ def render_next_week_outlook(
             owned_text = f"{item.percent_owned:.1f}%" if item.percent_owned is not None else "—"
             lines.append(
                 f"| {index} | **{item.name}** ({item.position}, {item.nba_team}) "
-                f"| {item.injury} | {game_text} | {item.season_avg:.1f} "
+                f"| {item.injury} | {game_text} | {display_average(item.season_avg)} "
                 f"| {display_average(item.last_7)} | {display_average(item.last_15)} "
-                f"| {display_average(item.last_30)} | {item.projected_avg:.1f} "
+                f"| {display_average(item.last_30)} | {display_average(item.projected_avg)} "
                 f"| **{item.estimated_points:.1f}** | {owned_text} |"
             )
 
