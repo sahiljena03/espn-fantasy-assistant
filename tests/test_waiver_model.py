@@ -139,6 +139,12 @@ class WaiverModelTests(unittest.TestCase):
         self.assertFalse(player_can_fill_slot(guard_only, "UT"))
         self.assertTrue(player_can_fill_slot(utility_eligible, "UT"))
 
+        forward = FakePlayer(3, "PF", ["PF", "F", "UT"])
+        guard = FakePlayer(4, "SG", ["SG", "G", "UT"])
+        self.assertTrue(player_can_fill_slot(forward, "F/C"))
+        self.assertTrue(player_can_fill_slot(forward, "G/F"))
+        self.assertFalse(player_can_fill_slot(guard, "F/C"))
+
     def test_pickup_must_fit_every_expected_available_game_after_drop(self):
         first_day = date(2026, 11, 16)
         second_day = date(2026, 11, 18)
