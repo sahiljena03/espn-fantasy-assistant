@@ -1,0 +1,52 @@
+name: Daily ESPN Fantasy Basketball Report
+
+on:
+  schedule:
+    # 09:45 America/New_York across EST and EDT; local-time guard avoids duplicate runs.
+    - cron: "45 13 * * *"
+    - cron: "45 14 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check local schedule time
+        id: schedule
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          now = datetime.now(ZoneInfo("America/New_York"))
+          scheduled = now.hour == 9 and now.minute == 45
+          print(f"Local time: {now.isoformat()}; scheduled run: {scheduled}")
+          with open("${GITHUB_OUTPUT}", "a", encoding="utf-8") as output:
+              output.write(f"run_report={str(scheduled).lower()}\\n")
+          PY
+
+      - name: Check out repository
+        if: steps.schedule.outputs.run_report == 'true' || github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.schedule.outputs.run_report == 'true' || github.event_name == 'workflow_dispatch'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        if: steps.schedule.outputs.run_report == 'true' || github.event_name == 'workflow_dispatch'
+        run: pip install -r requirements.txt
+
+      - name: Generate report
+        if: steps.schedule.outputs.run_report == 'true' || github.event_name == 'workflow_dispatch'
+        env:
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          ESPN_SWID: ${{ secrets.ESPN_SWID }}
+        run: python main.py
