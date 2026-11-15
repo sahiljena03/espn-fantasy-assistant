@@ -1249,7 +1249,7 @@ def render_report(league: League, today: date) -> str:
         if getattr(player, "playerId", None) in roster_ids:
             continue
         candidate = candidate_from_player(player, today, sunday)
-        if candidate.games_left > 0 and candidate.avg_points > 0:
+        if candidate.games_left > 0 and 0 < candidate.avg_points <= 30.0:
             available.append(candidate)
 
     available.sort(
@@ -1287,8 +1287,8 @@ def render_report(league: League, today: date) -> str:
         "## Add/drop targets",
         "",
         "Comparison-based suggestions only; no transactions are submitted. "
-        "Each option compares a waiver player's estimated remaining-week points "
-        "with a lower-value player currently on your roster.",
+        "Pickup candidates are capped at 30 FPPG regardless of ownership; a roster player "
+        "is considered droppable only when below 26 FPPG.",
         "",
         "| Add | Est. points | Consider dropping | Est. points | Net estimate |",
         "|---|---:|---|---:|---:|",
