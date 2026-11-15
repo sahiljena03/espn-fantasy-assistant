@@ -16,6 +16,9 @@ from main import (
     hydrate_free_agents,
     is_protected_roster_player,
     load_lineup_configuration,
+    parse_espn_injury_signals,
+    parse_espn_news_signals,
+    _best_swap,
 )
 
 
@@ -152,6 +155,100 @@ class WaiverModelTests(unittest.TestCase):
         self.assertEqual(slots, ["PG", "UT", "UT"])
         self.assertTrue(daily)
         self.assertIn("daily", mode)
+
+
+    def test_only_original_roster_players_can_be_swap_drop_candidates(self):
+        original_roster_player = FakePlayer(1, "PG", ["PG", "UT"])
+        earlier_hypothetical_pickup = FakePlayer(2, "PG", ["PG", "UT"])
+        new_pickup = FakePlayer(3, "PG", ["PG", "UT"])
+
+        def make_candidate(name, points):
+            return OutlookCandidate(
+                name=name,
+                position="PG",
+                nba_team="BOS",
+                injury="ACTIVE",
+                expected_return=None,
+                game_dates=[date(2026, 11, 16)],
+                game_probabilities={date(2026, 11, 16): 1.0},
+                season_avg=points,
+                projected_avg=points,
+                last_7=None,
+                last_15=None,
+                last_30=None,
+                blended_avg=points,
+                injury_multiplier=1.0,
+                expected_games=1.0,
+                estimated_points=points,
+                percent_owned=10.0,
+                percent_started=5.0,
+                latest_news="",
+                pos_rank=50,
+                data_sources=2,
+                confidence="Medium",
+                lineup_slot="",
+            )
+
+        candidates = {
+            1: make_candidate("Actual roster player", 20.0),
+            2: make_candidate("Earlier hypothetical pickup", 5.0),
+            3: make_candidate("New pickup", 25.0),
+        }
+        best = _best_swap(
+            [original_roster_player, earlier_hypothetical_pickup],
+            [new_pickup],
+            candidates,
+            25.0,
+            [],
+            True,
+            set(),
+            {1},
+        )
+        self.assertIsNotNone(best)
+        self.assertEqual(best[2].playerId, 1)
+
+    def test_espn_injury_parser_extracts_out_players_and_team(self):
+        payload = {
+            "injuries": [{
+                "team": {"id": "2", "abbreviation": "BOS"},
+                "injuries": [{
+                    "athlete": {"id": "3975", "displayName": "Stephen Curry"},
+                    "status": "Out",
+                    "type": {"name": "Ankle"},
+                    "date": "2026-11-15T00:00Z",
+                }],
+            }],
+        }
+        signals = parse_espn_injury_signals(payload)
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["player_id"], "3975")
+        self.assertEqual(signals[0]["team_abbr"], "BOS")
+        self.assertEqual(signals[0]["status"], "OUT")
+
+    def test_espn_news_parser_flags_recent_rest_and_load_management(self):
+        player = SimpleNamespace(
+            playerId=3975,
+            name="Stephen Curry",
+            proTeam="GSW",
+            position="PG",
+        )
+        payload = {
+            "articles": [{
+                "headline": "Stephen Curry to sit for rest",
+                "description": "Golden State lists Stephen Curry for load management.",
+                "published": "2026-11-15T12:00:00Z",
+                "links": {"web": {"href": "https://www.espn.com/nba/story/example"}},
+            }],
+        }
+        signals = parse_espn_news_signals(
+            payload,
+            {"stephen curry": [player]},
+            date(2026, 11, 15),
+        )
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["status"], "REST/LOAD-MANAGEMENT NEWS")
+        self.assertEqual(signals[0]["team_abbr"], "GSW")
+        self.assertIn("espn.com", signals[0]["source_url"])
 
     def test_projection_is_blended_with_actual_and_recent_averages(self):
         self.assertAlmostEqual(blended_player_average(22.0, 18.0, 30.0, 28.0, 25.0), 22.25)
