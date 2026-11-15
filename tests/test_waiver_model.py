@@ -12,7 +12,9 @@ from main import (
     as_date,
     best_fit_points,
     blended_player_average,
+    free_agent_rejection_reason,
     hydrate_free_agents,
+    is_protected_roster_player,
     load_lineup_configuration,
 )
 
@@ -80,7 +82,11 @@ class WaiverModelTests(unittest.TestCase):
                         "proTeamId": 2,
                         "injuryStatus": "ACTIVE",
                         "playerPoolEntry": {
-                            "player": {"stats": stats, "injured": False}
+                            "player": {
+                                "stats": stats,
+                                "injured": False,
+                                "ownership": {"percentOwned": 42.5, "percentStarted": 11.0},
+                            }
                         },
                     })
                 return {"players": wraps}
@@ -109,6 +115,8 @@ class WaiverModelTests(unittest.TestCase):
         self.assertTrue(all("2027_last_7" in player.stats for player in hydrated))
         self.assertTrue(all("2027_last_15" in player.stats for player in hydrated))
         self.assertTrue(all("2027_last_30" in player.stats for player in hydrated))
+        self.assertTrue(all(player.percent_owned == 42.5 for player in hydrated))
+        self.assertTrue(all(player.percent_started == 11.0 for player in hydrated))
         self.assertTrue(all(
             batch[2] == ["012027", "022027", "032027"]
             for batch in fetched_batches
@@ -145,10 +153,60 @@ class WaiverModelTests(unittest.TestCase):
         self.assertTrue(daily)
         self.assertIn("daily", mode)
 
-    def test_projection_preferred_but_missing_inputs_do_not_disqualify_player(self):
-        self.assertEqual(blended_player_average(22.0, 18.0, 30.0, 28.0, 25.0), 22.0)
+    def test_projection_is_blended_with_actual_and_recent_averages(self):
+        self.assertAlmostEqual(blended_player_average(22.0, 18.0, 30.0, 28.0, 25.0), 22.25)
         self.assertEqual(blended_player_average(0.0, 18.0, None, None, None), 18.0)
-        self.assertEqual(blended_player_average(0.0, 0.0, 7.0, 8.0, 9.0), 9.0)
+        self.assertAlmostEqual(blended_player_average(0.0, 0.0, 7.0, 8.0, 9.0), 8.0)
+
+    def test_pickup_ownership_and_scoring_guardrails(self):
+        base = {
+            "name": "Test Player",
+            "position": "PG",
+            "nba_team": "BOS",
+            "injury": "ACTIVE",
+            "expected_return": None,
+            "game_dates": [date(2026, 11, 16)],
+            "game_probabilities": {date(2026, 11, 16): 1.0},
+            "season_avg": 20.0,
+            "projected_avg": 22.0,
+            "last_7": 21.0,
+            "last_15": 20.0,
+            "last_30": 19.0,
+            "blended_avg": 20.5,
+            "injury_multiplier": 1.0,
+            "expected_games": 1.0,
+            "estimated_points": 20.5,
+            "percent_owned": 50.0,
+            "percent_started": 10.0,
+            "latest_news": "",
+            "pos_rank": 50,
+            "data_sources": 5,
+            "confidence": "High",
+            "lineup_slot": "",
+        }
+
+        def make_candidate(**changes):
+            values = dict(base)
+            values.update(changes)
+            return OutlookCandidate(**values)
+
+        self.assertIsNone(free_agent_rejection_reason(make_candidate()))
+        self.assertEqual(
+            free_agent_rejection_reason(make_candidate(percent_owned=50.1)),
+            "ownership above 50%",
+        )
+        self.assertEqual(
+            free_agent_rejection_reason(make_candidate(projected_avg=31.0)),
+            "FPPG above 30",
+        )
+        self.assertEqual(
+            free_agent_rejection_reason(make_candidate(percent_owned=None)),
+            "ownership unavailable",
+        )
+        self.assertTrue(is_protected_roster_player(make_candidate(percent_owned=92.0)))
+        self.assertTrue(is_protected_roster_player(make_candidate(season_avg=31.0)))
+        self.assertTrue(is_protected_roster_player(make_candidate(percent_owned=None)))
+        self.assertFalse(is_protected_roster_player(make_candidate(percent_owned=12.0)))
 
 
 if __name__ == "__main__":
