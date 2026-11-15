@@ -49,7 +49,11 @@ def player_games_left(player: object, today: date, sunday: date) -> int:
     schedule = getattr(player, "schedule", {}) or {}
     count = 0
     for game in schedule.values():
-        game_date = as_date(getattr(game, "date", None))
+        if isinstance(game, dict):
+            game_date_value = game.get("date")
+        else:
+            game_date_value = getattr(game, "date", None)
+        game_date = as_date(game_date_value)
         if game_date is not None and today <= game_date <= sunday:
             count += 1
     return count
