@@ -330,7 +330,7 @@ def render_next_week_outlook(
 
     if not roster_candidates:
         lines.append("Could not compare waiver options because the roster was empty.")
-        return "\\n".join(lines)
+        return "\n".join(lines)
 
     weakest_roster_player = min(roster_candidates, key=drop_priority_key)
     comparisons = []
@@ -425,7 +425,7 @@ def render_next_week_outlook(
         "*This is a next-week streaming comparison, not a long-term player valuation. "
         "Use judgment before dropping a high-upside player who is expected to return after this week.*",
     ])
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 def render_report(league: League, today: date) -> str:
     monday, sunday = week_bounds(today)
