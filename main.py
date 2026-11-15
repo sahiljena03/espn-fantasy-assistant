@@ -959,6 +959,73 @@ def _best_swap(
     return best
 
 
+def team_game_counts(
+    players: list[object],
+    start: date,
+    end: date,
+) -> dict[str, int]:
+    """Count unique scheduled NBA games per team from ESPN player schedules."""
+    games_by_team: dict[str, set[str]] = {}
+    for player in players:
+        team = str(getattr(player, "proTeam", "") or "").strip().upper()
+        if team in {"", "FA", "0", "NONE"}:
+            continue
+        schedule = getattr(player, "schedule", {}) or {}
+        if not isinstance(schedule, dict):
+            continue
+        team_games = games_by_team.setdefault(team, set())
+        for game_id, game in schedule.items():
+            if isinstance(game, dict):
+                game_date_value = game.get("date")
+            else:
+                game_date_value = getattr(game, "date", None)
+            game_date = as_date(game_date_value)
+            if game_date is not None and start <= game_date <= end:
+                team_games.add(str(game_id))
+    return {
+        team: len(game_ids)
+        for team, game_ids in games_by_team.items()
+        if game_ids
+    }
+
+
+def render_team_schedule_targets(
+    players: list[object],
+    start: date,
+    end: date,
+) -> str:
+    """Highlight four-game teams to target and two-game teams to avoid."""
+    counts = team_game_counts(players, start, end)
+    lines = [
+        "### Next-week team schedule targets",
+        "",
+        f"**Scoring window:** {start.strftime('%b %-d')}–{end.strftime('%b %-d')}. "
+        "Use the team schedule as a tiebreaker when streaming or choosing between similar players.",
+    ]
+    if not counts:
+        lines.extend([
+            "",
+            "Team schedules unavailable; no target/avoid teams can be verified.",
+        ])
+        return "\n".join(lines)
+
+    target_teams = sorted(team for team, games in counts.items() if games == 4)
+    avoid_teams = sorted(team for team, games in counts.items() if games == 2)
+    lines.extend([
+        "",
+        "**Target (4 games):** "
+        + (", ".join(f"{team} (4)" for team in target_teams) if target_teams else "None"),
+        "",
+        "**Avoid (2 games):** "
+        + (", ".join(f"{team} (2)" for team in avoid_teams) if avoid_teams else "None"),
+        "",
+        "*Counts use unique scheduled NBA game IDs from ESPN player-card schedules. "
+        "Teams with 3 or another number of games are omitted from this quick target/avoid note; "
+        "actual player availability and lineup fit still matter.*",
+    ])
+    return "\n".join(lines)
+
+
 def render_next_week_outlook(
     league: League,
     team: object,
@@ -1004,6 +1071,10 @@ def render_next_week_outlook(
         "",
         f"**Schedule hydration:** {schedule_records}/{nba_players} rostered-NBA free agents "
         f"({schedule_pct:.0f}%) have schedule data.",
+        "",
+        render_team_schedule_targets(
+            list(free_agents) + roster, start, end
+        ),
     ]
 
     if not roster_candidates:
