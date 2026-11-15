@@ -45,25 +45,75 @@ class WaiverModelTests(unittest.TestCase):
             if hasattr(time, "tzset"):
                 time.tzset()
 
-    def test_free_agents_are_rehydrated_in_batches_with_schedule_data(self):
+    def test_free_agents_are_rehydrated_with_schedule_and_recent_splits(self):
         original = [
             SimpleNamespace(playerId=1),
             SimpleNamespace(playerId=2),
             SimpleNamespace(playerId=3),
         ]
         fetched_batches = []
+        season = 2027
+        game_timestamp = datetime(2026, 11, 17, 0, 30, tzinfo=timezone.utc).timestamp() * 1000
+
+        class FakeRequests:
+            def get_player_card(self, playerIds, max_scoring_period, additional_filters):
+                fetched_batches.append((list(playerIds), max_scoring_period, list(additional_filters)))
+                wraps = []
+                for player_id in playerIds:
+                    stats = []
+                    values = {"00": 18.0, "10": 22.0, "01": 25.0, "02": 21.0, "03": 19.0}
+                    for prefix, average in values.items():
+                        stats.append({
+                            "id": f"{prefix}{season}",
+                            "seasonId": season,
+                            "scoringPeriodId": 0,
+                            "appliedTotal": average * 10,
+                            "appliedAverage": average,
+                        })
+                    wraps.append({
+                        "id": player_id,
+                        "fullName": f"Player {player_id}",
+                        "defaultPositionId": 1,
+                        "lineupSlotId": 0,
+                        "eligibleSlots": [0, 5, 11],
+                        "acquisitionType": "FREEAGENT",
+                        "proTeamId": 2,
+                        "injuryStatus": "ACTIVE",
+                        "playerPoolEntry": {
+                            "player": {"stats": stats, "injured": False}
+                        },
+                    })
+                return {"players": wraps}
 
         class FakeLeague:
-            def player_info(self, playerId):
-                fetched_batches.append(list(playerId))
-                players = [FakePlayer(pid, "PG", ["PG", "G", "UT"], {"game": {"date": datetime(2026, 11, 17)}})
-                           for pid in playerId]
-                return players
+            def __init__(self):
+                self.year = season
+                self.finalScoringPeriod = 21
+                self.pro_schedule = {
+                    2: {
+                        "game_1": [{
+                            "awayProTeamId": 2,
+                            "homeProTeamId": 1,
+                            "date": game_timestamp,
+                        }]
+                    }
+                }
+                self.espn_request = FakeRequests()
 
         hydrated = hydrate_free_agents(FakeLeague(), original, batch_size=2)
-        self.assertEqual([p.playerId for p in hydrated], [1, 2, 3])
-        self.assertEqual([len(batch) for batch in fetched_batches], [2, 1])
+        self.assertEqual([player.playerId for player in hydrated], [1, 2, 3])
+        self.assertEqual([len(batch[0]) for batch in fetched_batches], [2, 1])
         self.assertTrue(all(player.schedule for player in hydrated))
+        self.assertTrue(all(player.avg_points == 18.0 for player in hydrated))
+        self.assertTrue(all(player.projected_avg_points == 22.0 for player in hydrated))
+        self.assertTrue(all("2027_last_7" in player.stats for player in hydrated))
+        self.assertTrue(all("2027_last_15" in player.stats for player in hydrated))
+        self.assertTrue(all("2027_last_30" in player.stats for player in hydrated))
+        self.assertTrue(all(
+            batch[2] == ["012027", "022027", "032027"]
+            for batch in fetched_batches
+        ))
+
 
     def test_slot_optimizer_uses_position_eligibility(self):
         pg_weak = FakePlayer(1, "PG", ["PG", "G", "UT"])
