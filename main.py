@@ -50,6 +50,7 @@ class OutlookCandidate:
     pos_rank: int | None
     data_sources: int
     confidence: str
+    lineup_slot: str
 
 
 def season_start_year(today: date) -> int:
@@ -280,6 +281,7 @@ def outlook_candidate_from_player(
         pos_rank=int(pos_rank_value) if pos_rank_value > 0 else None,
         data_sources=data_sources,
         confidence=confidence,
+        lineup_slot=str(getattr(player, "lineupSlot", "") or "").upper(),
     )
 
 def display_average(value: float | None) -> str:
@@ -332,7 +334,13 @@ def render_next_week_outlook(
         lines.append("Could not compare waiver options because the roster was empty.")
         return "\n".join(lines)
 
-    weakest_roster_player = min(roster_candidates, key=drop_priority_key)
+    # Do not recommend cutting a player already parked in an IR slot.
+    droppable_roster = [
+        candidate for candidate in roster_candidates if candidate.lineup_slot != "IR"
+    ]
+    if not droppable_roster:
+        droppable_roster = roster_candidates
+    weakest_roster_player = min(droppable_roster, key=drop_priority_key)
     comparisons = []
     for player in free_agents:
         if getattr(player, "playerId", None) in roster_ids:
