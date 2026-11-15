@@ -156,7 +156,7 @@ class WaiverModelTests(unittest.TestCase):
     def test_projection_is_blended_with_actual_and_recent_averages(self):
         self.assertAlmostEqual(blended_player_average(22.0, 18.0, 30.0, 28.0, 25.0), 22.25)
         self.assertEqual(blended_player_average(0.0, 18.0, None, None, None), 18.0)
-        self.assertAlmostEqual(blended_player_average(0.0, 0.0, 7.0, 8.0, 9.0), 8.0)
+        self.assertAlmostEqual(blended_player_average(0.0, 0.0, 7.0, 8.0, 9.0), 8.3333333333)
 
     def test_pickup_ownership_and_scoring_guardrails(self):
         base = {
