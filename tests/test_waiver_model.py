@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 import unittest
+from unittest.mock import patch
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
@@ -18,6 +19,7 @@ from main import (
     load_lineup_configuration,
     parse_espn_injury_signals,
     parse_espn_news_signals,
+    minutes_opportunity_watch,
     _best_swap,
 )
 
@@ -224,6 +226,72 @@ class WaiverModelTests(unittest.TestCase):
         self.assertEqual(signals[0]["player_id"], "3975")
         self.assertEqual(signals[0]["team_abbr"], "BOS")
         self.assertEqual(signals[0]["status"], "OUT")
+
+
+    def test_minutes_watch_matches_out_teammate_to_same_position_free_agent(self):
+        injured_player = SimpleNamespace(
+            playerId=3975,
+            name="Stephen Curry",
+            proTeam="GSW",
+            position="PG",
+        )
+        bench_candidate = SimpleNamespace(
+            playerId=9988,
+            name="Bench Guard",
+            proTeam="GSW",
+            position="PG",
+        )
+        candidate = OutlookCandidate(
+            name="Bench Guard",
+            position="PG",
+            nba_team="GSW",
+            injury="ACTIVE",
+            expected_return=None,
+            game_dates=[date(2026, 11, 16)],
+            game_probabilities={date(2026, 11, 16): 1.0},
+            season_avg=12.0,
+            projected_avg=13.0,
+            last_7=15.0,
+            last_15=14.0,
+            last_30=13.0,
+            blended_avg=13.0,
+            injury_multiplier=1.0,
+            expected_games=1.0,
+            estimated_points=13.0,
+            percent_owned=4.0,
+            percent_started=3.0,
+            latest_news="",
+            pos_rank=100,
+            data_sources=5,
+            confidence="High",
+            lineup_slot="",
+        )
+        injury_payload = {
+            "injuries": [{
+                "team": {"id": "9", "abbreviation": "GSW"},
+                "injuries": [{
+                    "athlete": {"id": "3975", "displayName": "Stephen Curry"},
+                    "status": "Out",
+                    "type": {"name": "Ankle"},
+                    "date": "2026-11-15T00:00Z",
+                }],
+            }],
+        }
+        with patch(
+            "main.fetch_espn_json",
+            side_effect=[injury_payload, {"articles": []}],
+        ):
+            report = minutes_opportunity_watch(
+                [bench_candidate],
+                [bench_candidate],
+                {9988: candidate},
+                [injured_player],
+                date(2026, 11, 15),
+            )
+        self.assertIn("Bench Guard", report)
+        self.assertIn("Stephen Curry (OUT, Ankle)", report)
+        self.assertIn("Fantasy started %", report)
+        self.assertIn("No extra minutes or fantasy points", report)
 
     def test_espn_news_parser_flags_recent_rest_and_load_management(self):
         player = SimpleNamespace(
