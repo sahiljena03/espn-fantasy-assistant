@@ -1,8 +1,11 @@
 """Daily ESPN fantasy basketball waiver report. Read-only; never submits transactions."""
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
+from urllib.request import Request, urlopen
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -336,6 +339,369 @@ def latest_player_news(player: object) -> str:
     return ""
 
 
+ESPN_NBA_INJURY_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
+ESPN_NBA_NEWS_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/news?limit=100"
+ESPN_NBA_INJURY_PAGE = "https://www.espn.com/nba/injuries"
+ESPN_NBA_NEWS_PAGE = "https://www.espn.com/nba/"
+
+
+def fetch_espn_json(url: str, timeout: int = 8) -> dict:
+    request = Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; FantasyWaiverReport/1.0)"},
+    )
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def normalize_player_name(value: object) -> str:
+    return re.sub(r"[^a-z0-9 ]+", "", str(value or "").lower()).strip()
+
+
+def parse_espn_injury_signals(payload: dict) -> list[dict]:
+    """Parse relevant absences from ESPN's league-wide NBA injury report."""
+    signals = []
+    relevant_statuses = {
+        "OUT", "INACTIVE", "DOUBTFUL", "QUESTIONABLE", "DAY-TO-DAY",
+        "DAY TO DAY", "INJURY RESERVE", "INJURED RESERVE", "IR",
+    }
+    normalized_relevant = {item.replace("-", " ") for item in relevant_statuses}
+    for team_record in payload.get("injuries", []) or []:
+        team = team_record.get("team", {}) or {}
+        team_id = str(team.get("id", "") or "")
+        team_abbr = str(team.get("abbreviation", "") or "").upper()
+        for injury in team_record.get("injuries", []) or []:
+            athlete = injury.get("athlete", {}) or {}
+            status = str(injury.get("status", "") or "").strip().upper()
+            normalized_status = status.replace("_", " ").replace("-", " ")
+            if normalized_status not in normalized_relevant:
+                continue
+            injury_type = injury.get("type", {}) or {}
+            injury_detail = str(
+                injury_type.get("name", "")
+                or injury.get("details", "")
+                or injury.get("shortComment", "")
+            ).strip()
+            signals.append({
+                "player_id": str(athlete.get("id", "") or ""),
+                "player_name": str(athlete.get("displayName", "") or ""),
+                "team_id": team_id,
+                "team_abbr": team_abbr,
+                "position": "",
+                "status": status,
+                "detail": injury_detail,
+                "signal_type": "ESPN injury report",
+                "source_url": ESPN_NBA_INJURY_PAGE,
+            })
+    return signals
+
+
+def parse_espn_news_signals(
+    payload: dict,
+    players_by_name: dict[str, list[object]],
+    today: date,
+) -> list[dict]:
+    """Find recent NBA rest, absence, injury, and minutes-limit headlines."""
+    trigger_pattern = re.compile(
+        r"\b(rest(?:ing)?|load management|maintenance(?: day)?|will sit|sitting out|"
+        r"ruled out|out tonight|out for|will miss|misses|sidelined|inactive|"
+        r"minutes restriction|minutes limit|limited minutes|day-to-day|"
+        r"questionable|doubtful)\b",
+        re.IGNORECASE,
+    )
+    signals = []
+    articles = payload.get("articles") or payload.get("headlines") or []
+    player_names = sorted(players_by_name, key=len, reverse=True)
+    for article in articles:
+        headline = str(article.get("headline", "") or "").strip()
+        description = str(article.get("description", "") or "").strip()
+        article_text = f"{headline}. {description}"
+        if not trigger_pattern.search(article_text):
+            continue
+        published = str(article.get("published", "") or "")
+        if not published:
+            continue
+        try:
+            published_date = datetime.fromisoformat(
+                published.replace("Z", "+00:00")
+            ).date()
+        except ValueError:
+            continue
+        if (today - published_date).days > 10 or published_date > today + timedelta(days=1):
+            continue
+        normalized_article = normalize_player_name(article_text)
+        mentioned_names = []
+        for player_name in player_names:
+            if len(player_name.split()) < 2:
+                continue
+            pattern = r"(?<![a-z0-9])" + re.escape(player_name) + r"(?![a-z0-9])"
+            if re.search(pattern, normalized_article):
+                mentioned_names.append(player_name)
+        links = article.get("links", {}) or {}
+        web_link = links.get("web", {}) or {}
+        source_url = str(web_link.get("href", "") or ESPN_NBA_NEWS_PAGE)
+        lowered = article_text.lower()
+        if re.search(r"load management|rest(?:ing)?|maintenance", lowered):
+            signal_status = "REST/LOAD-MANAGEMENT NEWS"
+        elif re.search(r"minutes restriction|minutes limit|limited minutes", lowered):
+            signal_status = "MINUTES-LIMIT NEWS"
+        elif re.search(r"ruled out|out tonight|out for|will miss|misses|sidelined|inactive|will sit|sitting out", lowered):
+            signal_status = "ABSENCE NEWS"
+        else:
+            signal_status = "INJURY-STATUS NEWS"
+        for player_name in mentioned_names:
+            matching_players = players_by_name.get(player_name, [])
+            if len(matching_players) != 1:
+                continue
+            player = matching_players[0]
+            player_id = str(getattr(player, "playerId", "") or "")
+            team_abbr = str(getattr(player, "proTeam", "") or "").upper()
+            position = str(getattr(player, "position", "") or "")
+            if not player_id or not team_abbr:
+                continue
+            signals.append({
+                "player_id": player_id,
+                "player_name": str(getattr(player, "name", player_name)),
+                "team_id": "",
+                "team_abbr": team_abbr,
+                "position": position,
+                "status": signal_status,
+                "detail": headline or description,
+                "signal_type": "Recent ESPN NBA news",
+                "source_url": source_url,
+            })
+    return signals
+
+
+def fetch_espn_team_positions(team_ids: set[str]) -> dict[str, dict[str, str]]:
+    """Fetch NBA roster positions only when the league fantasy rosters lack an injured player."""
+    positions: dict[str, dict[str, str]] = {}
+    for team_id in sorted(team_ids):
+        if not team_id:
+            continue
+        try:
+            payload = fetch_espn_json(
+                f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}/roster",
+                timeout=5,
+            )
+        except Exception:
+            continue
+        athletes = payload.get("athletes", []) or []
+        flattened = []
+        for entry in athletes:
+            if isinstance(entry, dict) and isinstance(entry.get("items"), list):
+                flattened.extend(entry.get("items", []))
+            elif isinstance(entry, dict):
+                flattened.append(entry)
+        for athlete in flattened:
+            athlete_id = str(athlete.get("id", "") or "")
+            position = athlete.get("position", {}) or {}
+            abbreviation = str(position.get("abbreviation", "") or "")
+            if athlete_id and abbreviation:
+                positions[athlete_id] = {
+                    "position": abbreviation,
+                    "name": str(athlete.get("displayName", "") or ""),
+                }
+    return positions
+
+
+def position_groups(value: object) -> set[str]:
+    tokens = set(re.findall(r"PG|SG|SF|PF|C|G|F", str(value or "").upper()))
+    if tokens.intersection({"PG", "SG"}):
+        tokens.add("G")
+    if tokens.intersection({"SF", "PF"}):
+        tokens.add("F")
+    return tokens
+
+
+def minutes_opportunity_watch(
+    free_agents: list[object],
+    candidate_players: list[object],
+    candidate_data: dict[int, OutlookCandidate],
+    all_roster_players: list[object],
+    today: date,
+) -> str:
+    """Flag low-started free agents who may benefit from same-team absences."""
+    lines = [
+        "### Injury and minutes-opportunity watch",
+        "",
+        f"Sources: [ESPN NBA injury report]({ESPN_NBA_INJURY_PAGE}) · "
+        f"[ESPN NBA news]({ESPN_NBA_NEWS_PAGE}).",
+    ]
+    catalog_by_id = {}
+    players_by_name: dict[str, list[object]] = {}
+    for player in list(all_roster_players) + list(free_agents):
+        player_id = str(getattr(player, "playerId", "") or "")
+        if player_id:
+            catalog_by_id.setdefault(player_id, player)
+        normalized_name = normalize_player_name(getattr(player, "name", ""))
+        if normalized_name:
+            existing = players_by_name.setdefault(normalized_name, [])
+            if all(
+                getattr(item, "playerId", None) != getattr(player, "playerId", None)
+                for item in existing
+            ):
+                existing.append(player)
+
+    injury_signals = []
+    news_signals = []
+    injury_available = False
+    news_available = False
+    error_messages = []
+    try:
+        injury_payload = fetch_espn_json(ESPN_NBA_INJURY_URL)
+        injury_signals = parse_espn_injury_signals(injury_payload)
+        injury_available = True
+    except Exception as exc:
+        error_messages.append(f"injury report unavailable ({type(exc).__name__})")
+    try:
+        news_payload = fetch_espn_json(ESPN_NBA_NEWS_URL)
+        news_signals = parse_espn_news_signals(news_payload, players_by_name, today)
+        news_available = True
+    except Exception as exc:
+        error_messages.append(f"NBA news unavailable ({type(exc).__name__})")
+
+    for signal in injury_signals:
+        player = catalog_by_id.get(signal["player_id"])
+        if player is not None:
+            signal["position"] = str(getattr(player, "position", "") or "")
+            if not signal["team_abbr"]:
+                signal["team_abbr"] = str(getattr(player, "proTeam", "") or "").upper()
+    missing_position_team_ids = {
+        signal["team_id"]
+        for signal in injury_signals
+        if signal["team_id"] and not position_groups(signal["position"])
+    }
+    team_positions = fetch_espn_team_positions(missing_position_team_ids)
+    for signal in injury_signals:
+        position_record = team_positions.get(signal["player_id"], {})
+        if not signal["position"]:
+            signal["position"] = position_record.get("position", "")
+
+    signals = injury_signals + news_signals
+    if not injury_available and not news_available:
+        lines.extend([
+            "",
+            "The scan could not retrieve either ESPN source. No injury-driven minutes opportunity is being assumed.",
+            f"Source status: {'; '.join(error_messages)}.",
+            "",
+            "*No role or fantasy-point boosts are applied from this scan.*",
+        ])
+        return "\n".join(lines)
+
+    opportunity_by_player: dict[int, dict] = {}
+    for signal in signals:
+        team_abbr = str(signal.get("team_abbr", "") or "").upper()
+        affected_groups = position_groups(signal.get("position", ""))
+        if not team_abbr or not affected_groups:
+            continue
+        status = str(signal.get("status", "") or "")
+        status_upper = status.upper()
+        if status_upper in {"OUT", "INACTIVE", "INJURY RESERVE", "INJURED RESERVE", "IR", "ABSENCE NEWS"}:
+            status_weight = 3.0
+        elif "DOUBTFUL" in status_upper:
+            status_weight = 2.5
+        elif "REST/LOAD-MANAGEMENT" in status_upper:
+            status_weight = 2.0
+        elif "QUESTIONABLE" in status_upper or "DAY-TO-DAY" in status_upper:
+            status_weight = 1.5
+        elif "MINUTES-LIMIT" in status_upper:
+            status_weight = 1.25
+        else:
+            status_weight = 1.0
+
+        for candidate_player in candidate_players:
+            player_id = getattr(candidate_player, "playerId", None)
+            candidate = candidate_data.get(player_id)
+            if candidate is None or str(getattr(candidate_player, "proTeam", "") or "").upper() != team_abbr:
+                continue
+            candidate_groups = position_groups(candidate.position)
+            shared_groups = affected_groups.intersection(candidate_groups)
+            if not shared_groups:
+                continue
+            if candidate.percent_started is not None and candidate.percent_started > 45.0:
+                continue
+            candidate_primary = str(candidate.position).upper()
+            affected_primary = str(signal.get("position", "") or "").upper()
+            position_match = 1.0 if candidate_primary == affected_primary else 0.5
+            started = candidate.percent_started
+            bench_bonus = 0.5 if started is not None and started <= 15.0 else 0.0
+            score = status_weight + position_match + bench_bonus
+            record = opportunity_by_player.setdefault(player_id, {
+                "candidate": candidate,
+                "score": 0.0,
+                "reasons": [],
+                "sources": [],
+            })
+            reason = (
+                f"{signal['player_name']} ({status}) at {team_abbr}, "
+                f"same position group"
+            )
+            if reason not in record["reasons"]:
+                record["reasons"].append(reason)
+                record["score"] += score
+            source = signal.get("source_url", "")
+            if source and source not in record["sources"]:
+                record["sources"].append(source)
+
+    if not opportunity_by_player:
+        lines.extend([
+            "",
+            "No verified same-team, same-position-group free-agent beneficiaries were found in the current waiver pool.",
+            f"Source check: injury report {'available' if injury_available else 'unavailable'}; "
+            f"NBA news {'available' if news_available else 'unavailable'}.",
+        ])
+    else:
+        opportunities = list(opportunity_by_player.values())
+        def opportunity_sort_key(item: dict) -> tuple[float, float, float]:
+            candidate = item["candidate"]
+            return (
+                item["score"],
+                candidate.estimated_points,
+                candidate.last_15 or 0.0,
+            )
+        opportunities.sort(key=opportunity_sort_key, reverse=True)
+        lines.extend([
+            "",
+            "| Potential beneficiary | Team / Pos | Teammate availability signal | ESPN started | L15 vs season FPPG |",
+            "|---|---|---|---:|---:|",
+        ])
+        for item in opportunities[:5]:
+            candidate = item["candidate"]
+            reasons = "; ".join(item["reasons"][:2]).replace("|", "/")
+            started_label = (
+                f"{candidate.percent_started:.1f}%"
+                if candidate.percent_started is not None else "Unknown"
+            )
+            trend = "—"
+            if candidate.last_15 is not None and candidate.season_avg > 0:
+                trend = f"{candidate.last_15 - candidate.season_avg:+.1f}"
+            lines.append(
+                f"| **{candidate.name}** | {candidate.nba_team} / {candidate.position} "
+                f"| {reasons} | {started_label} | {trend} |"
+            )
+        lines.append("")
+        lines.append(
+            "*These are role-change watchlist flags, not confirmed minute projections. "
+            "Candidates must be available free agents on the same NBA team and position group; "
+            "ESPN percent-started is used as a rough bench/low-start signal when available. "
+            "No extra minutes or fantasy points are added to the waiver model from this scan.*"
+        )
+        source_urls = []
+        for item in opportunities[:5]:
+            for source in item["sources"]:
+                if source not in source_urls:
+                    source_urls.append(source)
+        if source_urls:
+            lines.append("Sources for flagged players: " + " · ".join(
+                f"[ESPN update {index}]({url})"
+                for index, url in enumerate(source_urls[:5], start=1)
+            ) + ".")
+    if error_messages:
+        lines.extend(["", "Partial-source warning: " + "; ".join(error_messages) + "."])
+    return "\n".join(lines)
+
+
 def outlook_candidate_from_player(
     player: object, start: date, end: date
 ) -> OutlookCandidate:
@@ -564,13 +930,15 @@ def _best_swap(
     slots: list[str],
     daily_lineups: bool,
     excluded_add_ids: set[int],
+    eligible_drop_ids: set[int] | None = None,
 ) -> tuple[float, object, object, float] | None:
     best = None
     best_key = None
     roster_ids = {getattr(player, "playerId", None) for player in roster}
     droppable = [
         player for player in roster
-        if candidate_data.get(getattr(player, "playerId", None)) is not None
+        if (eligible_drop_ids is None or getattr(player, "playerId", None) in eligible_drop_ids)
+        and candidate_data.get(getattr(player, "playerId", None)) is not None
         and candidate_data[getattr(player, "playerId")].lineup_slot != "IR"
         and not is_protected_roster_player(candidate_data[getattr(player, "playerId")])
     ]
@@ -698,7 +1066,14 @@ def render_next_week_outlook(
         candidate_data[player_id] = candidate
         candidate_players.append(player)
 
+    all_league_roster = []
+    for fantasy_team in league.teams:
+        all_league_roster.extend(getattr(fantasy_team, "roster", []) or [])
     lines.extend([
+        "",
+        minutes_opportunity_watch(
+            free_agents, candidate_players, candidate_data, all_league_roster, today
+        ),
         "",
         f"**Waiver filters:** excluded {rejected['ownership above 50%']} players above 50% ownership, "
         f"{rejected['FPPG above 30']} players above 30 FPPG, and "
@@ -724,7 +1099,7 @@ def render_next_week_outlook(
     for _ in range(3):
         best = _best_swap(
             virtual_roster, candidate_players, candidate_data, baseline,
-            slots, daily_lineups, used_add_ids,
+            slots, daily_lineups, used_add_ids, roster_ids,
         )
         if best is None or best[0] <= 0.05:
             break
@@ -743,7 +1118,7 @@ def render_next_week_outlook(
     while len(selected) < 3:
         best = _best_swap(
             virtual_roster, candidate_players, candidate_data, baseline,
-            slots, daily_lineups, used_add_ids,
+            slots, daily_lineups, used_add_ids, roster_ids,
         )
         if best is None:
             break
