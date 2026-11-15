@@ -232,14 +232,14 @@ class WaiverModelTests(unittest.TestCase):
 
     def test_team_game_counts_deduplicates_players_by_team(self):
         gsw_schedule = {
-            "game_1": {"date": datetime(2026, 11, 16)},
-            "game_2": {"date": datetime(2026, 11, 18)},
-            "game_3": {"date": datetime(2026, 11, 20)},
-            "game_4": {"date": datetime(2026, 11, 22)},
+            "game_1": {"date": datetime(2026, 11, 16, 17)},
+            "game_2": {"date": datetime(2026, 11, 18, 17)},
+            "game_3": {"date": datetime(2026, 11, 20, 17)},
+            "game_4": {"date": datetime(2026, 11, 22, 17)},
         }
         nyk_schedule = {
-            "game_5": {"date": datetime(2026, 11, 17)},
-            "game_6": {"date": datetime(2026, 11, 21)},
+            "game_5": {"date": datetime(2026, 11, 17, 17)},
+            "game_6": {"date": datetime(2026, 11, 21, 17)},
         }
         players = [
             SimpleNamespace(proTeam="GSW", schedule=gsw_schedule),
@@ -259,25 +259,25 @@ class WaiverModelTests(unittest.TestCase):
             SimpleNamespace(
                 proTeam="GSW",
                 schedule={
-                    "a": {"date": datetime(2026, 11, 16)},
-                    "b": {"date": datetime(2026, 11, 18)},
-                    "c": {"date": datetime(2026, 11, 20)},
-                    "d": {"date": datetime(2026, 11, 22)},
+                    "a": {"date": datetime(2026, 11, 16, 17)},
+                    "b": {"date": datetime(2026, 11, 18, 17)},
+                    "c": {"date": datetime(2026, 11, 20, 17)},
+                    "d": {"date": datetime(2026, 11, 22, 17)},
                 },
             ),
             SimpleNamespace(
                 proTeam="NYK",
                 schedule={
-                    "e": {"date": datetime(2026, 11, 17)},
-                    "f": {"date": datetime(2026, 11, 21)},
+                    "e": {"date": datetime(2026, 11, 17, 17)},
+                    "f": {"date": datetime(2026, 11, 21, 17)},
                 },
             ),
             SimpleNamespace(
                 proTeam="BOS",
                 schedule={
-                    "g": {"date": datetime(2026, 11, 16)},
-                    "h": {"date": datetime(2026, 11, 18)},
-                    "i": {"date": datetime(2026, 11, 20)},
+                    "g": {"date": datetime(2026, 11, 16, 17)},
+                    "h": {"date": datetime(2026, 11, 18, 17)},
+                    "i": {"date": datetime(2026, 11, 20, 17)},
                 },
             ),
         ]
