@@ -1115,18 +1115,24 @@ def render_team_schedule_targets(
         return "\n".join(lines)
 
     target_teams = sorted(team for team, games in counts.items() if games == 4)
+    consider_teams = sorted(team for team, games in counts.items() if games == 3)
     avoid_teams = sorted(team for team, games in counts.items() if games == 2)
     lines.extend([
         "",
         "**Target (4 games):** "
         + (", ".join(f"{team} (4)" for team in target_teams) if target_teams else "None"),
         "",
+        "**Consider (3 games):** "
+        + (", ".join(f"{team} (3)" for team in consider_teams) if consider_teams else "None")
+        + ". Three-game players remain eligible when projected weekly points and lineup gain are strong.",
+        "",
         "**Avoid (2 games):** "
         + (", ".join(f"{team} (2)" for team in avoid_teams) if avoid_teams else "None"),
         "",
         "*Counts use unique scheduled NBA game IDs from ESPN player-card schedules. "
-        "Teams with 3 or another number of games are omitted from this quick target/avoid note; "
-        "actual player availability and lineup fit still matter.*",
+        "Four games are a schedule advantage, not a mandatory filter; three-game players are "
+        "still evaluated on projected weekly points and full-game lineup fit. Actual player "
+        "availability and lineup fit still matter.*",
     ])
     return "\n".join(lines)
 
