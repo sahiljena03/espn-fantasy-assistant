@@ -815,22 +815,32 @@ def swap_priority_key(
 
 
 def player_can_fill_slot(player: object, slot: str) -> bool:
-    eligible = {
-        str(position).upper()
-        for position in (getattr(player, "eligibleSlots", []) or [])
-    }
-    primary = str(getattr(player, "position", "") or "").upper()
-    if not eligible and primary:
-        eligible.add(primary)
+    raw_eligible = getattr(player, "eligibleSlots", None)
+    if raw_eligible is None:
+        primary = str(getattr(player, "position", "") or "").upper()
+        eligible = {primary} if primary else set()
+    else:
+        eligible = {
+            str(position).upper()
+            for position in (raw_eligible or [])
+        }
+
+    # Utility eligibility is explicit in ESPN's eligibleSlots field. Do not assume
+    # that every player can occupy a custom utility slot.
     if slot == "UT":
+        return "UT" in eligible
+    if slot in eligible:
         return True
-    if slot == "G":
-        return bool(eligible.intersection({"PG", "SG", "G"}))
-    if slot == "F":
-        return bool(eligible.intersection({"SF", "PF", "F"}))
+    slot_groups = {
+        "G": {"PG", "SG", "G"},
+        "F": {"SF", "PF", "F"},
+        "G/F": {"PG", "SG", "SF", "PF", "G", "F"},
+    }
+    if slot in slot_groups:
+        return bool(eligible.intersection(slot_groups[slot]))
     if "/" in slot:
-        return slot in eligible or bool(eligible.intersection(slot.split("/")))
-    return slot in eligible
+        return bool(eligible.intersection(slot.split("/")))
+    return False
 
 
 def best_fit_assignments(
