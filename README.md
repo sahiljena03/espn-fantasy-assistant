@@ -10,6 +10,7 @@ Daily, read-only waiver analysis for **Scottie on the Spectrum** (ESPN league ID
 - Compares waiver options against lower-value players on your roster.
 - Includes position, NBA team, ESPN injury designation, fantasy points per game, and remaining games.
 - Displays no more than **5 add/drop comparisons**, matching the league's weekly move limit.
+- On **Saturday and Sunday**, adds a next-week outlook with the top 3 waiver priorities, scheduled game dates, season and recent 7/15/30-day FPPG averages, ESPN projected FPPG, injury status/expected return date, ownership, and available ESPN player news.
 - Publishes the report in the GitHub Actions run summary.
 
 **It never executes roster transactions.** Check ESPN for late injury news, starting status, and your actual remaining acquisition count.
@@ -33,10 +34,14 @@ GitHub Actions cron uses UTC and may start late. The workflow schedules both 13:
 
 ## Methodology and limitations
 
-The script uses the unofficial `espn-api` Python library to read ESPN Fantasy Basketball league, roster, free-agent, schedule, and projection data. Estimated remaining points are:
+The script uses the unofficial `espn-api` Python library to read ESPN Fantasy Basketball league, roster, free-agent, schedule, projection, recent-average, injury, and player-news data.
 
-`ESPN projected fantasy points per game × scheduled NBA games remaining this week`
+For the current week, estimated remaining points are:
 
-If ESPN does not provide a positive projected average, the script falls back to the player's season average. This is a weekly-streaming heuristic, not a full model of minutes, role changes, matchup difficulty, category scarcity, or injury probabilities. Injury designations can lag news. The waiver pool is limited to the top 250 players returned by ESPN's API.
+`FPPG × scheduled NBA games remaining this week`
+
+On Saturdays and Sundays, the next-week outlook blends ESPN projected FPPG (35%), season FPPG (30%), recent 30-day average (15%), recent 15-day average (10%), and recent 7-day average (10%). Missing averages are omitted and the remaining weights are normalized. The blended FPPG is multiplied by next week's scheduled games and a conservative availability factor based on ESPN injury status and expected return date. The report also shows recent averages, ESPN's projected FPPG, ownership, and available player-news headlines.
+
+This is a weekly-streaming heuristic, not a full model of minutes, role changes, opponent difficulty, or individualized injury probabilities. Injury designations and news can lag. The waiver pool is limited to the top 250 players returned by ESPN's API.
 
 If the league uses category scoring rather than points scoring, FPPG is not an appropriate decision metric and should be replaced with category-specific projections.
