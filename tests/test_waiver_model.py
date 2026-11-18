@@ -579,6 +579,30 @@ class WaiverModelTests(unittest.TestCase):
         self.assertEqual(signals[0]["team_abbr"], "GSW")
         self.assertIn("espn.com", signals[0]["source_url"])
 
+    def test_espn_news_parser_marks_explicit_out_as_confirmed(self):
+        player = SimpleNamespace(
+            playerId=3975,
+            name="Stephen Curry",
+            proTeam="GSW",
+            position="PG",
+        )
+        payload = {
+            "articles": [{
+                "headline": "Stephen Curry ruled out for three weeks with ankle injury",
+                "description": "Golden State will be without Curry.",
+                "published": "2026-11-18T12:00:00Z",
+                "links": {"web": {"href": "https://www.espn.com/nba/story/example"}},
+            }],
+        }
+        signals = parse_espn_news_signals(
+            payload,
+            {"stephen curry": [player]},
+            date(2026, 11, 18),
+        )
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["status"], "ABSENCE NEWS")
+        self.assertTrue(signals[0]["confirmed_absence"])
+
     def test_realized_game_log_metrics_capture_consistency_and_dnp(self):
         game_dates = [
             datetime(2026, 11, 2, 18),
