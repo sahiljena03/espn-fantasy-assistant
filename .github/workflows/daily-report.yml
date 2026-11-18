@@ -6,6 +6,10 @@ on:
     - cron: "45 13 * * *"
     - cron: "45 14 * * *"
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "main.py"
 
 permissions:
   contents: read
@@ -30,22 +34,22 @@ jobs:
           PY
 
       - name: Check out repository
-        if: steps.schedule.outputs.run_report == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.schedule.outputs.run_report == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
         uses: actions/checkout@v7
 
       - name: Set up Python
-        if: steps.schedule.outputs.run_report == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.schedule.outputs.run_report == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
         uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
 
       - name: Install dependencies
-        if: steps.schedule.outputs.run_report == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.schedule.outputs.run_report == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
         run: pip install -r requirements.txt
 
       - name: Generate report
-        if: steps.schedule.outputs.run_report == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.schedule.outputs.run_report == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
         env:
           ESPN_S2: ${{ secrets.ESPN_S2 }}
           ESPN_SWID: ${{ secrets.ESPN_SWID }}
