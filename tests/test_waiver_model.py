@@ -602,6 +602,31 @@ class WaiverModelTests(unittest.TestCase):
         self.assertEqual(len(signals), 1)
         self.assertEqual(signals[0]["status"], "ABSENCE NEWS")
         self.assertTrue(signals[0]["confirmed_absence"])
+        self.assertTrue(signals[0]["sustained_absence"])
+
+    def test_single_game_absence_is_not_a_sustained_role_vacancy(self):
+        player = SimpleNamespace(
+            playerId=3975,
+            name="Stephen Curry",
+            proTeam="GSW",
+            position="PG",
+        )
+        payload = {
+            "articles": [{
+                "headline": "Stephen Curry to miss Wednesday's game with ankle soreness",
+                "description": "Curry will be re-evaluated after the game.",
+                "published": "2026-11-18T12:00:00Z",
+                "links": {"web": {"href": "https://www.espn.com/nba/story/example"}},
+            }],
+        }
+        signals = parse_espn_news_signals(
+            payload,
+            {"stephen curry": [player]},
+            date(2026, 11, 18),
+        )
+        self.assertEqual(len(signals), 1)
+        self.assertTrue(signals[0]["confirmed_absence"])
+        self.assertFalse(signals[0]["sustained_absence"])
 
     def test_realized_game_log_metrics_capture_consistency_and_dnp(self):
         game_dates = [
