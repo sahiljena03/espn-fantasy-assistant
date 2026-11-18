@@ -1814,123 +1814,58 @@ def render_report(league: League, today: date) -> str:
         )
         raise RuntimeError(f"Team ID {TEAM_ID} not found. Teams: {available_teams}")
 
-    roster = [
-        candidate_from_player(player, today, sunday) for player in team.roster
-    ]
-    roster_ids = {getattr(player, "playerId", None) for player in team.roster}
+    original_roster = list(getattr(team, "roster", []) or [])
+    roster = hydrate_free_agents(league, original_roster)
+    roster_ids = {getattr(player, "playerId", None) for player in roster}
     raw_free_agents = league.free_agents(size=FREE_AGENT_POOL_SIZE)
     free_agents = hydrate_free_agents(league, raw_free_agents)
-
-    available = []
-    for player in free_agents:
-        if getattr(player, "playerId", None) in roster_ids:
-            continue
-        candidate = candidate_from_player(player, today, sunday)
-        if candidate.games_left > 0 and 0 < candidate.avg_points <= 30.0:
-            available.append(candidate)
-
-    available.sort(
-        key=lambda item: (item.projected_week_points, item.avg_points, item.games_left),
-        reverse=True,
-    )
-    roster_with_games = [item for item in roster if item.games_left > 0]
-    roster_with_games.sort(key=lambda item: item.projected_week_points)
 
     lines = [
         f"# ESPN Fantasy Basketball — {TEAM_NAME}",
         "",
         f"**Report date:** {today.strftime('%A, %B %-d, %Y')}  ",
         f"**Scoring week:** {monday.strftime('%b %-d')}–{sunday.strftime('%b %-d')}  ",
+        f"**Remaining analysis window:** {today.strftime('%a %b %-d')}–{sunday.strftime('%a %b %-d')}  ",
         f"**League:** 14 teams · **Weekly add limit:** {MAX_WEEKLY_ADDS}",
         "",
-        "## Best available players for the rest of this week",
+        "## Current-week waiver optimization",
         "",
-        "| Player | Pos | NBA | Injury | FPPG* | Games left | Est. remaining points |",
-        "|---|---:|---:|---|---:|---:|---:|",
+        "This report uses realized 2026–27 fantasy production only. ESPN projected FPPG and projected "
+        "weekly totals are excluded from ranking and add/drop valuation. A move is recommended only "
+        "when it improves your legal active lineup and the pickup can be started in every remaining "
+        "game it is expected to play.",
+        "",
+        render_next_week_outlook(
+            league,
+            team,
+            free_agents,
+            today,
+            roster_players=roster,
+            scoring_window=(today, sunday),
+            window_title="Remaining-week add/drop recommendations",
+        ),
     ]
 
-    if not available:
-        lines.append("| No qualifying free agents found | | | | | | |")
-    else:
-        for item in available[:15]:
-            lines.append(
-                f"| {item.name} | {item.position} | {item.nba_team} | {item.injury} "
-                f"| {item.avg_points:.1f} | {item.games_left} "
-                f"| {item.projected_week_points:.1f} |"
-            )
-
-    lines.extend([
-        "",
-        "## Add/drop targets",
-        "",
-        "Comparison-based suggestions only; no transactions are submitted. "
-        "Pickup candidates are capped at 30 FPPG regardless of ownership; a roster player "
-        "is considered droppable only when below 26 FPPG.",
-        "",
-        "| Add | Est. points | Consider dropping | Est. points | Net estimate |",
-        "|---|---:|---|---:|---:|",
-    ])
-
-    comparisons = []
-    eligible_pickups = [item for item in available if 0 < item.avg_points <= 30.0]
-    eligible_drops = [item for item in roster_with_games if 0 < item.avg_points < 26.0]
-    for free_agent in eligible_pickups:
-        for roster_player in eligible_drops:
-            net = free_agent.projected_week_points - roster_player.projected_week_points
-            if net > 0:
-                comparisons.append((net, free_agent, roster_player))
-    comparisons.sort(key=lambda item: item[0], reverse=True)
-
-    used_adds = set()
-    used_drops = set()
-    shown = 0
-    for net, add_player, drop_player in comparisons:
-        if add_player.name in used_adds or drop_player.name in used_drops:
-            continue
-        lines.append(
-            f"| **{add_player.name}** ({add_player.games_left} GP) "
-            f"| {add_player.projected_week_points:.1f} "
-            f"| {drop_player.name} ({drop_player.games_left} GP) "
-            f"| {drop_player.projected_week_points:.1f} | **+{net:.1f}** |"
-        )
-        used_adds.add(add_player.name)
-        used_drops.add(drop_player.name)
-        shown += 1
-        if shown >= MAX_WEEKLY_ADDS:
-            break
-    if shown == 0:
-        lines.append("| No clear positive-value add/drop found | | | | |")
-
-    lines.extend(["", "## Roster watch", ""])
-    if roster_with_games:
-        for item in roster_with_games[:8]:
-            lines.append(
-                f"- **{item.name}** — {item.games_left} games left, "
-                f"{item.avg_points:.1f} projected FPPG, {item.injury}."
-            )
-    else:
-        lines.append("- No roster players with a remaining game were identified.")
-
     if today.weekday() in (5, 6):
-        hydrated_roster = hydrate_free_agents(league, list(team.roster))
         lines.extend([
             "",
             render_next_week_outlook(
-                league, team, free_agents, today, roster_players=hydrated_roster
+                league,
+                team,
+                free_agents,
+                today,
+                roster_players=roster,
+                scoring_window=next_week_bounds(today),
+                window_title="Next-week add/drop outlook",
             ),
         ])
 
     lines.extend([
         "",
-        "*FPPG = ESPN fantasy points per game (season projection when available; "
-        "otherwise season average). Remaining points are FPPG × scheduled games, "
-        "not a guarantee. Injury designations may lag breaking news.*",
-        "",
-        "**Read-only:** verify injury news, lineup status, and remaining weekly "
-        "acquisitions in ESPN before acting. This tool never adds or drops players.",
+        "*The model is decision support, not a promise of future points. Always verify late injury "
+        "news and actual lineup lock times in ESPN. No roster transactions are submitted.*",
     ])
     return "\n".join(lines)
-
 
 def main() -> int:
     espn_s2 = os.environ.get("ESPN_S2")
