@@ -752,41 +752,209 @@ def minutes_opportunity_watch(
     return "\n".join(lines)
 
 
+def player_game_log_records(
+    player: object, as_of: date
+) -> list[dict[str, float | date | None]]:
+    """Return realized, league-scoring game totals matched to ESPN schedule IDs."""
+    stats = getattr(player, "stats", {}) or {}
+    schedule = getattr(player, "schedule", {}) or {}
+    records: list[dict[str, float | date | None]] = []
+    if not isinstance(stats, dict) or not isinstance(schedule, dict):
+        return records
+
+    for game_id, game in schedule.items():
+        stat = stats.get(str(game_id), stats.get(game_id))
+        if not isinstance(stat, dict):
+            continue
+        points = numeric(stat.get("applied_total"), -1.0)
+        if points < 0:
+            continue
+        game_date = as_date(stat.get("date"))
+        if game_date is None:
+            game_date = as_date(
+                game.get("date") if isinstance(game, dict)
+                else getattr(game, "date", None)
+            )
+        if game_date is None or game_date > as_of:
+            continue
+
+        totals = stat.get("total")
+        if not isinstance(totals, dict):
+            totals = {}
+        minutes: float | None = None
+        for key, value in totals.items():
+            normalized = re.sub(r"[^a-z]", "", str(key).lower())
+            if normalized in {"min", "mins", "minutes"}:
+                if isinstance(value, str) and ":" in value:
+                    pieces = value.split(":", 1)
+                    try:
+                        minutes = float(pieces[0]) + float(pieces[1]) / 60.0
+                    except ValueError:
+                        minutes = None
+                else:
+                    parsed = numeric(value, -1.0)
+                    minutes = parsed if parsed >= 0 else None
+                break
+        # A zero-minute record is a DNP and must not depress scoring consistency.
+        if minutes is not None and minutes <= 0:
+            continue
+        records.append({
+            "date": game_date,
+            "points": points,
+            "minutes": minutes,
+        })
+
+    records.sort(key=lambda item: item["date"] or date.min)
+    return records
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = max(0.0, min(1.0, percentile)) * (len(ordered) - 1)
+    lower = int(position)
+    upper = min(len(ordered) - 1, lower + 1)
+    fraction = position - lower
+    return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
+
+
+def player_production_profile(
+    player: object, as_of: date
+) -> dict[str, float | int | None]:
+    """Build a projection-free production/consistency profile from actual season results."""
+    records = player_game_log_records(player, as_of)
+    game_points = [float(item["points"]) for item in records]
+    season_avg = numeric(getattr(player, "avg_points", None), 0.0)
+    if season_avg <= 0 and game_points:
+        season_avg = statistics.fmean(game_points)
+
+    median = statistics.median(game_points) if game_points else None
+    stddev = statistics.pstdev(game_points) if len(game_points) >= 2 else None
+    coefficient = (
+        stddev / abs(statistics.fmean(game_points))
+        if stddev is not None and game_points and statistics.fmean(game_points) > 0
+        else None
+    )
+    consistency = (
+        sum(value >= season_avg * 0.75 for value in game_points) / len(game_points)
+        if game_points and season_avg > 0 else None
+    )
+    floor_20 = _percentile(game_points, 0.20)
+    last_5_values = game_points[-5:]
+    last_5 = statistics.fmean(last_5_values) if last_5_values else None
+
+    minute_values = [
+        float(item["minutes"])
+        for item in records if item["minutes"] is not None
+    ]
+    season_minutes = statistics.fmean(minute_values) if minute_values else None
+    last_5_minutes_values = [
+        float(item["minutes"])
+        for item in records[-5:] if item["minutes"] is not None
+    ]
+    last_5_minutes = (
+        statistics.fmean(last_5_minutes_values) if last_5_minutes_values else None
+    )
+    prior_minute_values = [
+        float(item["minutes"])
+        for item in records[:-5] if item["minutes"] is not None
+    ]
+    prior_minutes = (
+        statistics.fmean(prior_minute_values)
+        if len(prior_minute_values) >= 3 else None
+    )
+
+    # ESPN's appliedAverage is the current-season realized points-per-game value.
+    # Robust game-log statistics temper small-sample spikes without importing projections.
+    base_fppg = season_avg
+    if season_avg > 0 and median is not None:
+        if len(game_points) >= 5:
+            shrunk_last_5 = (
+                sum(last_5_values) + 5.0 * season_avg
+            ) / (len(last_5_values) + 5.0)
+            base_fppg = (
+                0.70 * season_avg
+                + 0.20 * median
+                + 0.10 * shrunk_last_5
+            )
+        elif len(game_points) >= 3:
+            base_fppg = 0.80 * season_avg + 0.20 * median
+
+    volatility_penalty = 0.0
+    if coefficient is not None:
+        volatility_penalty = min(0.08, max(0.0, coefficient - 0.45) * 0.10)
+    consistency_adjustment = 0.0
+    if consistency is not None:
+        consistency_adjustment = max(
+            -0.035, min(0.02, (consistency - 0.60) * 0.07)
+        )
+    reliability_fppg = (
+        base_fppg * (1.0 - volatility_penalty)
+        * (1.0 + consistency_adjustment)
+        if base_fppg > 0 else 0.0
+    )
+
+    total_points = numeric(getattr(player, "total_points", None), 0.0)
+    inferred_games = (
+        int(round(total_points / season_avg))
+        if total_points > 0 and season_avg > 0 else 0
+    )
+    season_games = max(len(records), inferred_games)
+    return {
+        "season_avg": season_avg,
+        "season_games": season_games,
+        "game_log_games": len(records),
+        "median": median,
+        "stddev": stddev,
+        "coefficient_variation": coefficient,
+        "consistency_rate": consistency,
+        "floor_20": floor_20,
+        "last_5": last_5,
+        "season_minutes": season_minutes,
+        "last_5_minutes": last_5_minutes,
+        "prior_minutes": prior_minutes,
+        "base_fppg": base_fppg,
+        "reliability_fppg": reliability_fppg,
+    }
+
+
 def outlook_candidate_from_player(
-    player: object, start: date, end: date
+    player: object,
+    start: date,
+    end: date,
+    as_of: date | None = None,
 ) -> OutlookCandidate:
+    as_of = as_of or datetime.now(EASTERN).date()
     game_dates = player_game_dates(player, start, end)
-    season_avg = numeric(getattr(player, "avg_points", None))
+    profile = player_production_profile(player, as_of)
+    season_avg = float(profile["season_avg"] or 0.0)
+    # Retained for diagnostics only. Projected FPPG is intentionally not used.
     projected_avg = numeric(getattr(player, "projected_avg_points", None))
     last_7 = recent_player_average(player, "last_7")
     last_15 = recent_player_average(player, "last_15")
     last_30 = recent_player_average(player, "last_30")
-    model_avg = blended_player_average(
-        projected_avg, season_avg, last_7, last_15, last_30
-    )
+    model_avg = float(profile["reliability_fppg"] or 0.0)
+
     status, expected_return, injury_factor, expected_games, game_probabilities = expected_playable_games(
         player, game_dates
     )
     percent_owned_value = numeric(getattr(player, "percent_owned", None), -1.0)
     percent_started_value = numeric(getattr(player, "percent_started", None), -1.0)
     pos_rank_value = numeric(getattr(player, "posRank", None), -1.0)
-
-    data_sources = sum(
-        value > 0
-        for value in (
-            projected_avg, season_avg, last_7 or 0.0,
-            last_15 or 0.0, last_30 or 0.0,
-        )
-    )
-    schedule_present = bool(getattr(player, "schedule", None))
-    if data_sources >= 3 and schedule_present and status != "UNKNOWN":
+    log_games = int(profile["game_log_games"] or 0)
+    if log_games >= 10 and season_avg > 0 and status != "UNKNOWN":
         confidence = "High"
-    elif data_sources >= 2 and schedule_present:
+    elif log_games >= 5 and season_avg > 0:
         confidence = "Medium"
+    elif season_avg > 0:
+        confidence = "Low — limited game-log sample"
     else:
-        confidence = "Low"
+        confidence = "Low — missing actual scoring"
 
-    return OutlookCandidate(
+    candidate = OutlookCandidate(
         name=str(getattr(player, "name", "Unknown")),
         position=str(getattr(player, "position", "—")),
         nba_team=str(getattr(player, "proTeam", "—")),
@@ -807,11 +975,29 @@ def outlook_candidate_from_player(
         percent_started=percent_started_value if percent_started_value >= 0 else None,
         latest_news=latest_player_news(player),
         pos_rank=int(pos_rank_value) if pos_rank_value > 0 else None,
-        data_sources=data_sources,
+        data_sources=sum([
+            int(season_avg > 0),
+            int(log_games > 0),
+            int(last_7 is not None),
+            int(last_15 is not None),
+            int(last_30 is not None),
+        ]),
         confidence=confidence,
         lineup_slot=str(getattr(player, "lineupSlot", "") or "").upper(),
+        game_log_games=log_games,
+        season_games=int(profile["season_games"] or 0),
+        season_median=profile["median"],
+        game_stddev=profile["stddev"],
+        coefficient_variation=profile["coefficient_variation"],
+        consistency_rate=profile["consistency_rate"],
+        floor_20=profile["floor_20"],
+        last_5=profile["last_5"],
+        season_minutes=profile["season_minutes"],
+        last_5_minutes=profile["last_5_minutes"],
+        prior_minutes=profile["prior_minutes"],
+        base_fppg=float(profile["base_fppg"] or 0.0),
     )
-
+    return candidate
 
 def display_average(value: float | None) -> str:
     return f"{value:.1f}" if value is not None and value > 0 else "—"
