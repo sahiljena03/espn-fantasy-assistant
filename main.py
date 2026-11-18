@@ -450,7 +450,7 @@ def parse_espn_news_signals(
     """Find recent NBA rest, absence, injury, and minutes-limit headlines."""
     trigger_pattern = re.compile(
         r"\b(rest(?:ing)?|load management|maintenance(?: day)?|will sit|sitting out|"
-        r"ruled out|out tonight|out for|will miss|misses|sidelined|inactive|"
+        r"ruled out|out tonight|out for|will miss|to miss|misses|sidelined|inactive|"
         r"minutes restriction|minutes limit|limited minutes|day-to-day|"
         r"questionable|doubtful)\b",
         re.IGNORECASE,
@@ -511,7 +511,9 @@ def parse_espn_news_signals(
                 lowered,
             ))
             sustained_absence = bool(re.search(
-                r"\b(for at least \d+ weeks|for \d+ weeks|at least \d+ weeks|"
+                r"\b(for (?:at least )?(?:\d+|one|two|three|four|five|six|seven|"
+                r"eight|nine|ten|several|multiple) weeks|at least (?:\d+|one|two|"
+                r"three|four|five|six|seven|eight|nine|ten|several|multiple) weeks|"
                 r"next \d+ games|rest of (?:the )?season|indefinitely)\b",
                 lowered,
             ))
