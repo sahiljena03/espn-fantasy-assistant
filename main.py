@@ -680,7 +680,10 @@ def minutes_opportunity_watch(
                 "score": 0.0,
                 "reasons": [],
                 "sources": [],
+                "confirmed_absence": False,
             })
+            if status_upper in {"OUT", "INACTIVE", "INJURY RESERVE", "INJURED RESERVE", "IR"}:
+                record["confirmed_absence"] = True
             detail = str(signal.get("detail", "") or "").replace("|", "/").strip()
             detail_text = f", {detail[:72]}" if detail else ""
             reason = (
@@ -693,6 +696,43 @@ def minutes_opportunity_watch(
             source = signal.get("source_url", "")
             if source and source not in record["sources"]:
                 record["sources"].append(source)
+
+    # Do not invent minutes from a headline. Apply a small, explicitly bounded
+    # role uplift only when a confirmed teammate absence coincides with an observed
+    # increase in the free agent's own recent minutes.
+    for item in opportunity_by_player.values():
+        candidate = item["candidate"]
+        if (
+            item["confirmed_absence"]
+            and candidate.game_log_games >= 8
+            and candidate.prior_minutes is not None
+            and candidate.last_5_minutes is not None
+            and candidate.base_fppg > 0
+        ):
+            minutes_change = candidate.last_5_minutes - candidate.prior_minutes
+            minutes_growth = (
+                candidate.last_5_minutes / candidate.prior_minutes - 1.0
+                if candidate.prior_minutes > 0 else 0.0
+            )
+            if minutes_change >= 3.0 and minutes_growth >= 0.15:
+                candidate.role_uplift = min(
+                    0.06, max(0.02, 0.02 + (minutes_growth - 0.15) * 0.08)
+                )
+                candidate.opportunity_note = (
+                    f"Observed L5 minutes {candidate.last_5_minutes:.1f} vs "
+                    f"{candidate.prior_minutes:.1f} before the recent confirmed absence"
+                )
+                candidate.blended_avg = (
+                    candidate.base_fppg * (1.0 + candidate.role_uplift)
+                )
+                candidate.estimated_points = (
+                    candidate.blended_avg * candidate.expected_games
+                )
+                item["role_uplift_applied"] = True
+            else:
+                item["role_uplift_applied"] = False
+        else:
+            item["role_uplift_applied"] = False
 
     if not opportunity_by_player:
         lines.extend([
@@ -713,8 +753,8 @@ def minutes_opportunity_watch(
         opportunities.sort(key=opportunity_sort_key, reverse=True)
         lines.extend([
             "",
-            "| Potential beneficiary | Team / Pos | Teammate availability signal | Fantasy started % | L15 vs season FPPG |",
-            "|---|---|---|---:|---:|",
+            "| Potential beneficiary | Team / Pos | Teammate availability signal | Fantasy started % | L5 minutes vs prior | Role adjustment |",
+            "|---|---|---|---:|---:|---:|",
         ])
         for item in opportunities[:5]:
             candidate = item["candidate"]
@@ -723,19 +763,25 @@ def minutes_opportunity_watch(
                 f"{candidate.percent_started:.1f}%"
                 if candidate.percent_started is not None else "Unknown"
             )
-            trend = "—"
-            if candidate.last_15 is not None and candidate.season_avg > 0:
-                trend = f"{candidate.last_15 - candidate.season_avg:+.1f}"
+            minutes_trend = "—"
+            if candidate.last_5_minutes is not None and candidate.prior_minutes is not None:
+                minutes_trend = (
+                    f"{candidate.last_5_minutes:.1f} / {candidate.prior_minutes:.1f}"
+                )
+            uplift_label = (
+                f"+{candidate.role_uplift * 100:.1f}%"
+                if candidate.role_uplift > 0 else "Watch only"
+            )
             lines.append(
                 f"| **{candidate.name}** | {candidate.nba_team} / {candidate.position} "
-                f"| {reasons} | {started_label} | {trend} |"
+                f"| {reasons} | {started_label} | {minutes_trend} | {uplift_label} |"
             )
         lines.append("")
         lines.append(
-            "*These are role-change watchlist flags, not confirmed minute projections. "
-            "Candidates must be available free agents on the same NBA team and position group; "
-            "ESPN percent-started is used as a rough bench/low-start signal when available. "
-            "No extra minutes or fantasy points are added to the waiver model from this scan.*"
+            "*Same-team/position matching is a watchlist signal, not proof of starter succession. "
+            "A +2% to +6% FPPG role adjustment is applied only when a teammate is confirmed OUT/INACTIVE "
+            "and the candidate's last-five game minutes are at least 15% and 3 minutes above the "
+            "pre-L5 baseline. Otherwise the news is shown as context only.*"
         )
         source_urls = []
         for item in opportunities[:5]:
@@ -1004,23 +1050,14 @@ def display_average(value: float | None) -> str:
 
 
 def is_protected_roster_player(candidate: OutlookCandidate) -> bool:
-    """Only roster players at 26+ model FPPG are protected from drops."""
-    return candidate.blended_avg <= 0 or candidate.blended_avg >= 26.0
+    """Protect only players whose actual-season production data is unavailable."""
+    return candidate.blended_avg <= 0 or candidate.season_avg <= 0
 
 
 def free_agent_rejection_reason(candidate: OutlookCandidate) -> str | None:
-    """Apply the 30-FPPG pickup limit; ownership never blocks an addition."""
-    peak_rate = max(
-        candidate.projected_avg,
-        candidate.season_avg,
-        candidate.last_7 or 0.0,
-        candidate.last_15 or 0.0,
-        candidate.last_30 or 0.0,
-    )
-    if peak_rate > 30.0:
-        return "FPPG above 30"
-    if candidate.blended_avg <= 0:
-        return "no scoring average"
+    """No arbitrary FPPG ceiling or ownership cutoff; require actual data and games."""
+    if candidate.blended_avg <= 0 or candidate.season_avg <= 0:
+        return "no actual season scoring"
     if not candidate.game_dates:
         return "no scheduled games"
     return None
