@@ -8,6 +8,7 @@ import sys
 from urllib.request import Request, urlopen
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+import statistics
 from zoneinfo import ZoneInfo
 
 from espn_api.basketball import League
@@ -56,6 +57,20 @@ class OutlookCandidate:
     data_sources: int
     confidence: str
     lineup_slot: str
+    game_log_games: int = 0
+    season_games: int = 0
+    season_median: float | None = None
+    game_stddev: float | None = None
+    coefficient_variation: float | None = None
+    consistency_rate: float | None = None
+    floor_20: float | None = None
+    last_5: float | None = None
+    season_minutes: float | None = None
+    last_5_minutes: float | None = None
+    prior_minutes: float | None = None
+    base_fppg: float = 0.0
+    role_uplift: float = 0.0
+    opportunity_note: str = ""
 
 
 def hydrate_free_agents(
@@ -105,6 +120,37 @@ def hydrate_free_agents(
             if original is not None:
                 player.lineupSlot = getattr(original, "lineupSlot", player.lineupSlot)
             hydrated[player.playerId] = player
+
+        # Player.player_info returns ESPN's event-level scoring data. Merge it when
+        # available so consistency/minutes metrics use realized games, not projections.
+        try:
+            detailed_result = league.player_info(playerId=batch)
+            detailed_players = (
+                detailed_result if isinstance(detailed_result, list)
+                else [detailed_result]
+            )
+            for detailed in detailed_players:
+                player_id = getattr(detailed, "playerId", None)
+                current = hydrated.get(player_id)
+                if current is None:
+                    continue
+                detailed_stats = getattr(detailed, "stats", {}) or {}
+                if detailed_stats:
+                    current.stats.update(detailed_stats)
+                detailed_schedule = getattr(detailed, "schedule", {}) or {}
+                if not getattr(current, "schedule", None) and detailed_schedule:
+                    current.schedule = detailed_schedule
+                detailed_average = numeric(getattr(detailed, "avg_points", None), 0.0)
+                if detailed_average > 0:
+                    current.avg_points = detailed_average
+                    current.total_points = numeric(
+                        getattr(detailed, "total_points", None),
+                        getattr(current, "total_points", 0.0),
+                    )
+        except Exception:
+            # Some league/library versions do not expose batch player_info; the
+            # season average remains usable, but the report will mark log confidence lower.
+            pass
 
     # Preserve ESPN's original ordering; leave missing cards unhydrated so validation
     # can fail closed rather than inventing a player's schedule or production.
