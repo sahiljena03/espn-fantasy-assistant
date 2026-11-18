@@ -1424,8 +1424,8 @@ def render_daily_lineup_gaps(
     lines = [
         "### Remaining-day lineup capacity",
         "",
-        "| Day | Roster players with a game | Active slots filled | Open active slots |",
-        "|---|---:|---:|---:|",
+        "| Day | Priority day | Roster players with a game | Active slots filled | Open active slots |",
+        "|---|---|---:|---:|---:|",
     ]
     if not scheduled_dates:
         lines.append("| No scheduled games in this scoring window | — | — | — |")
@@ -1440,9 +1440,10 @@ def render_daily_lineup_gaps(
         )
         filled = len(assignments.get(game_date, {}))
         open_slots = max(0, len(slots) - filled)
+        is_priority_day = game_date.weekday() in {0, 1, 3, 5, 6}
         lines.append(
-            f"| {game_date.strftime('%A %b %-d')} | {roster_playing} "
-            f"| {filled}/{len(slots)} | **{open_slots}** |"
+            f"| {game_date.strftime('%A %b %-d')} | {'Yes' if is_priority_day else 'No'} "
+            f"| {roster_playing} | {filled}/{len(slots)} | **{open_slots}** |"
         )
     if not daily_lineups:
         lines.extend([
