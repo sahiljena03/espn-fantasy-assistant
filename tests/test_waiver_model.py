@@ -22,6 +22,9 @@ from main import (
     parse_espn_injury_signals,
     parse_espn_news_signals,
     pickup_lineup_game_usage,
+    outlook_candidate_from_player,
+    player_game_log_records,
+    player_production_profile,
     player_can_fill_slot,
     minutes_opportunity_watch,
     render_team_schedule_targets,
@@ -117,6 +120,25 @@ class WaiverModelTests(unittest.TestCase):
                 }
                 self.espn_request = FakeRequests()
 
+            def player_info(self, playerId, include_news=False):
+                game_date = datetime(2026, 11, 16, 18)
+                return [
+                    SimpleNamespace(
+                        playerId=player_id,
+                        stats={
+                            "game_1": {
+                                "date": game_date,
+                                "applied_total": 22.0,
+                                "total": {"MIN": 30.0},
+                            }
+                        },
+                        schedule={},
+                        avg_points=18.0,
+                        total_points=180.0,
+                    )
+                    for player_id in playerId
+                ]
+
         hydrated = hydrate_free_agents(FakeLeague(), original, batch_size=2)
         self.assertEqual([player.playerId for player in hydrated], [1, 2, 3])
         self.assertEqual([len(batch[0]) for batch in fetched_batches], [2, 1])
@@ -128,6 +150,11 @@ class WaiverModelTests(unittest.TestCase):
         self.assertTrue(all("2027_last_30" in player.stats for player in hydrated))
         self.assertTrue(all(player.percent_owned == 42.5 for player in hydrated))
         self.assertTrue(all(player.percent_started == 11.0 for player in hydrated))
+        self.assertTrue(all("game_1" in player.stats for player in hydrated))
+        self.assertEqual(
+            len(player_game_log_records(hydrated[0], date(2026, 11, 18))),
+            1,
+        )
         self.assertTrue(all(
             batch[2] == ["012027", "022027", "032027"]
             for batch in fetched_batches
@@ -552,12 +579,120 @@ class WaiverModelTests(unittest.TestCase):
         self.assertEqual(signals[0]["team_abbr"], "GSW")
         self.assertIn("espn.com", signals[0]["source_url"])
 
-    def test_projection_is_blended_with_actual_and_recent_averages(self):
-        self.assertAlmostEqual(blended_player_average(22.0, 18.0, 30.0, 28.0, 25.0), 22.25)
-        self.assertEqual(blended_player_average(0.0, 18.0, None, None, None), 18.0)
-        self.assertAlmostEqual(blended_player_average(0.0, 0.0, 7.0, 8.0, 9.0), 8.3333333333)
+    def test_realized_game_log_metrics_capture_consistency_and_dnp(self):
+        game_dates = [
+            datetime(2026, 11, 2, 18),
+            datetime(2026, 11, 4, 18),
+            datetime(2026, 11, 6, 18),
+            datetime(2026, 11, 8, 18),
+            datetime(2026, 11, 10, 18),
+            datetime(2026, 11, 12, 18),
+        ]
+        points = [10.0, 20.0, 30.0, 20.0, 20.0, 0.0]
+        minutes = [20.0, 24.0, 30.0, 22.0, 28.0, 0.0]
+        schedule = {}
+        stats = {}
+        for index, (game_date, point_total, minute_total) in enumerate(
+            zip(game_dates, points, minutes), start=1
+        ):
+            game_id = f"game_{index}"
+            schedule[game_id] = {"date": game_date}
+            stats[game_id] = {
+                "date": game_date,
+                "applied_total": point_total,
+                "total": {"MIN": minute_total},
+            }
+        player = SimpleNamespace(
+            playerId=1,
+            name="Actual Production Player",
+            position="PG",
+            proTeam="BOS",
+            injuryStatus="ACTIVE",
+            injured=False,
+            expected_return_date=None,
+            lineupSlot="",
+            eligibleSlots=["PG", "G", "UT"],
+            percent_owned=99.0,
+            percent_started=12.0,
+            posRank=20,
+            schedule=schedule,
+            stats=stats,
+            avg_points=20.0,
+            total_points=100.0,
+            projected_avg_points=95.0,
+        )
 
-    def test_pickup_ownership_is_informational_and_drop_limit_is_26_fppg(self):
+        profile = player_production_profile(player, date(2026, 11, 18))
+        self.assertEqual(profile["game_log_games"], 5)
+        self.assertEqual(profile["season_games"], 5)
+        self.assertAlmostEqual(profile["season_avg"], 20.0)
+        self.assertAlmostEqual(profile["median"], 20.0)
+        self.assertAlmostEqual(profile["last_5"], 20.0)
+        self.assertAlmostEqual(profile["consistency_rate"], 0.8)
+        self.assertGreater(profile["floor_20"], 10.0)
+        self.assertIsNotNone(profile["coefficient_variation"])
+        self.assertAlmostEqual(profile["season_minutes"], 24.8)
+        self.assertEqual(
+            len(player_game_log_records(player, date(2026, 11, 18))),
+            5,
+            "The zero-minute DNP must not count as a played game.",
+        )
+
+    def test_projected_fppg_does_not_change_actual_production_score(self):
+        historic_dates = [
+            datetime(2026, 11, 2, 18),
+            datetime(2026, 11, 4, 18),
+            datetime(2026, 11, 6, 18),
+            datetime(2026, 11, 8, 18),
+            datetime(2026, 11, 10, 18),
+        ]
+        schedule = {}
+        stats = {}
+        for index, game_date in enumerate(historic_dates, start=1):
+            game_id = f"old_{index}"
+            schedule[game_id] = {"date": game_date}
+            stats[game_id] = {
+                "date": game_date,
+                "applied_total": 20.0,
+                "total": {"MIN": 30.0},
+            }
+        schedule["future_a"] = {"date": datetime(2026, 11, 19, 18)}
+        schedule["future_b"] = {"date": datetime(2026, 11, 21, 18)}
+
+        def make_player(projected_average):
+            return SimpleNamespace(
+                playerId=1,
+                name="Actual Production Player",
+                position="PG",
+                proTeam="BOS",
+                injuryStatus="ACTIVE",
+                injured=False,
+                expected_return_date=None,
+                lineupSlot="",
+                eligibleSlots=["PG", "G", "UT"],
+                percent_owned=99.0,
+                percent_started=12.0,
+                posRank=20,
+                schedule=schedule,
+                stats=stats,
+                avg_points=20.0,
+                total_points=100.0,
+                projected_avg_points=projected_average,
+            )
+
+        low_projection = outlook_candidate_from_player(
+            make_player(5.0), date(2026, 11, 19), date(2026, 11, 23),
+            as_of=date(2026, 11, 18),
+        )
+        high_projection = outlook_candidate_from_player(
+            make_player(95.0), date(2026, 11, 19), date(2026, 11, 23),
+            as_of=date(2026, 11, 18),
+        )
+        self.assertAlmostEqual(low_projection.blended_avg, high_projection.blended_avg)
+        self.assertAlmostEqual(low_projection.season_avg, 20.0)
+        self.assertEqual(low_projection.expected_games, 2.0)
+
+    def test_pickup_ownership_is_informational_and_no_projection_or_rate_cutoffs(self):
         base = {
             "name": "Test Player",
             "position": "PG",
@@ -592,16 +727,90 @@ class WaiverModelTests(unittest.TestCase):
         self.assertIsNone(free_agent_rejection_reason(make_candidate()))
         self.assertIsNone(free_agent_rejection_reason(make_candidate(percent_owned=99.9)))
         self.assertIsNone(free_agent_rejection_reason(make_candidate(percent_owned=None)))
-        self.assertEqual(
-            free_agent_rejection_reason(make_candidate(projected_avg=31.0)),
-            "FPPG above 30",
+        self.assertIsNone(free_agent_rejection_reason(make_candidate(projected_avg=95.0)))
+        self.assertIsNone(
+            free_agent_rejection_reason(
+                make_candidate(season_avg=31.0, blended_avg=31.0, projected_avg=95.0)
+            )
         )
         self.assertFalse(is_protected_roster_player(make_candidate(percent_owned=99.9)))
         self.assertFalse(is_protected_roster_player(make_candidate(percent_owned=None)))
         self.assertFalse(is_protected_roster_player(make_candidate(blended_avg=25.99)))
-        self.assertTrue(is_protected_roster_player(make_candidate(blended_avg=26.0)))
-        self.assertTrue(is_protected_roster_player(make_candidate(blended_avg=29.0)))
+        self.assertFalse(
+            is_protected_roster_player(
+                make_candidate(season_avg=29.0, blended_avg=29.0)
+            ),
+            "Drop eligibility should be decided by the lineup comparison, not a 26 FPPG gate.",
+        )
         self.assertTrue(is_protected_roster_player(make_candidate(blended_avg=0.0)))
+        self.assertTrue(
+            is_protected_roster_player(make_candidate(season_avg=0.0, blended_avg=20.0))
+        )
+
+    def test_confirmed_absence_role_uplift_requires_observed_minutes_growth(self):
+        injured_player = SimpleNamespace(
+            playerId=3975, name="Starting Guard", proTeam="GSW", position="PG"
+        )
+        free_agent = SimpleNamespace(
+            playerId=9988, name="Bench Guard", proTeam="GSW", position="PG"
+        )
+        candidate = OutlookCandidate(
+            name="Bench Guard",
+            position="PG",
+            nba_team="GSW",
+            injury="ACTIVE",
+            expected_return=None,
+            game_dates=[date(2026, 11, 19), date(2026, 11, 21)],
+            game_probabilities={
+                date(2026, 11, 19): 1.0,
+                date(2026, 11, 21): 1.0,
+            },
+            season_avg=20.0,
+            projected_avg=40.0,
+            last_7=None,
+            last_15=None,
+            last_30=None,
+            blended_avg=20.0,
+            injury_multiplier=1.0,
+            expected_games=2.0,
+            estimated_points=40.0,
+            percent_owned=4.0,
+            percent_started=3.0,
+            latest_news="",
+            pos_rank=100,
+            data_sources=5,
+            confidence="High",
+            lineup_slot="",
+            game_log_games=10,
+            season_games=10,
+            season_minutes=27.0,
+            last_5_minutes=31.0,
+            prior_minutes=25.0,
+            base_fppg=20.0,
+        )
+        injury_payload = {
+            "injuries": [{
+                "team": {"id": "9", "abbreviation": "GSW"},
+                "injuries": [{
+                    "athlete": {"id": "3975", "displayName": "Starting Guard"},
+                    "status": "Out",
+                    "type": {"name": "Ankle"},
+                    "date": "2026-11-18T00:00Z",
+                }],
+            }],
+        }
+        with patch(
+            "main.fetch_espn_json",
+            side_effect=[injury_payload, {"articles": []}],
+        ):
+            report = minutes_opportunity_watch(
+                [free_agent], [free_agent], {9988: candidate},
+                [injured_player], date(2026, 11, 18),
+            )
+        self.assertIn("Bench Guard", report)
+        self.assertGreater(candidate.role_uplift, 0.0)
+        self.assertGreater(candidate.blended_avg, candidate.base_fppg)
+        self.assertIn("Observed L5 minutes", candidate.opportunity_note)
 
 
 if __name__ == "__main__":
