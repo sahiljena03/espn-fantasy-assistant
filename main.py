@@ -1683,8 +1683,8 @@ def render_next_week_outlook(
 
     lines.extend([
         "",
-        "| Priority | Pickup | Owned | Pickup est. pts | Consider dropping | Drop est. pts | Team lineup gain | Games (expected) | Active lineup games | Model FPPG | L15 | Injury | Confidence |",
-        "|---:|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---|---|",
+        "| Priority | Pickup | Season FPPG | Model FPPG | Median | L5 | Consistency | CV | Games (expected) | Active fit | Drop | Team gain | Role signal | Confidence |",
+        "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---|---|",
     ])
 
     for index, (gain, add_player, drop_player, after_points, active_games, available_games, is_upgrade) in enumerate(selected, start=1):
@@ -1692,15 +1692,27 @@ def render_next_week_outlook(
         drop = candidate_data[getattr(drop_player, "playerId")]
         label = f"**{add.name}**" if is_upgrade else f"{add.name} (watchlist)"
         marker = "+" if gain >= 0 else ""
+        consistency_label = (
+            f"{add.consistency_rate * 100:.0f}%"
+            if add.consistency_rate is not None else "—"
+        )
+        cv_label = (
+            f"{add.coefficient_variation:.2f}"
+            if add.coefficient_variation is not None else "—"
+        )
+        role_label = (
+            f"+{add.role_uplift * 100:.0f}%"
+            if add.role_uplift > 0 else "—"
+        )
         lines.append(
             f"| {index} | {label} ({add.position}, {add.nba_team}) "
-            f"| {f'{add.percent_owned:.1f}%' if add.percent_owned is not None else 'Unknown'} "
-        f"| {add.estimated_points:.1f} | {drop.name} "
-            f"| {drop.estimated_points:.1f} | **{marker}{gain:.1f}** "
+            f"| {display_average(add.season_avg)} | {display_average(add.blended_avg)} "
+            f"| {display_average(add.season_median)} | {display_average(add.last_5)} "
+            f"| {consistency_label} | {cv_label} "
             f"| {len(add.game_dates)} ({add.expected_games:.1f}) "
             f"| {active_games}/{available_games} (0 sit) "
-            f"| {display_average(add.blended_avg)} | {display_average(add.last_15)} "
-            f"| {add.injury} | {add.confidence} |"
+            f"| {drop.name} ({display_average(drop.season_avg)} FPPG) "
+            f"| **{marker}{gain:.1f}** | {role_label} | {add.confidence} |"
         )
 
     positive_count = sum(1 for item in selected if item[6])
@@ -1708,11 +1720,11 @@ def render_next_week_outlook(
     if positive_count:
         lines.append(
             f"The model found {positive_count} positive roster upgrade(s). Later gains are "
-            "incremental estimates after simulating earlier positive pickups."
+            "incremental actual-production estimates after simulating earlier positive pickups."
         )
     else:
         lines.append(
-            "No available player is projected to improve the optimized lineup total. The "
+            "No available player improves the optimized actual-production lineup total. The "
             "options below are the closest alternatives, shown as a watchlist rather than "
             "mislabelled as upgrades."
         )
@@ -1734,19 +1746,34 @@ def render_next_week_outlook(
         if add.last_15 is not None and add.season_avg > 0:
             change = add.last_15 - add.season_avg
             trend = f" L15 is {change:+.1f} FPPG versus season average."
-        details = (
-            f"{'Adds' if is_upgrade else 'Would add'} **{gain:+.1f} projected team points** "
-            f"over {drop.name} after lineup-slot optimization. {len(add.game_dates)} scheduled "
-            f"games ({game_text}); {add.expected_games:.1f} expected playable games. "
-            f"Lineup fit: {active_games}/{available_games} expected-available games in an active slot, "
-            "with no benching caused by active-slot limits. "
-            f"Model FPPG {display_average(add.blended_avg)} "
-            f"(ESPN projection {display_average(add.projected_avg)}, "
-            f"season {display_average(add.season_avg)}, "
-            f"L7 {display_average(add.last_7)}, "
-            f"L15 {display_average(add.last_15)}, "
-            f"L30 {display_average(add.last_30)}).{trend}"
+        consistency_label = (
+            f"{add.consistency_rate * 100:.0f}% of logged games at/above 75% of season FPPG"
+            if add.consistency_rate is not None else "consistency unavailable"
         )
+        cv_label = (
+            f"{add.coefficient_variation:.2f}"
+            if add.coefficient_variation is not None else "CV unavailable"
+        )
+        details = (
+            f"{'Adds' if is_upgrade else 'Would add'} **{gain:+.1f} actual-production team points** "
+            f"over {drop.name} after optimizing your legal active lineup. "
+            f"{len(add.game_dates)} remaining scheduled games ({game_text}); "
+            f"{add.expected_games:.1f} expected playable games. "
+            f"Lineup fit: {active_games}/{available_games} expected-available games started, "
+            "with no forced benching. "
+            f"Season actual FPPG {display_average(add.season_avg)} across {add.season_games} games; "
+            f"game-log sample {add.game_log_games}; robust model FPPG {display_average(add.blended_avg)}; "
+            f"median {display_average(add.season_median)}, L5 {display_average(add.last_5)}, "
+            f"20th-percentile floor {display_average(add.floor_20)}, "
+            f"consistency {consistency_label}, CV {cv_label}. "
+            f"Last-five minutes {display_average(add.last_5_minutes)} vs prior baseline "
+            f"{display_average(add.prior_minutes)}.{trend}"
+        )
+        if add.role_uplift > 0 and add.opportunity_note:
+            details += (
+                f" Evidence-gated role adjustment +{add.role_uplift * 100:.1f}%: "
+                f"{add.opportunity_note}."
+            )
         if add.pos_rank is not None:
             details += f" ESPN position rank: {add.pos_rank}."
         if add.expected_return is not None:
@@ -1759,16 +1786,22 @@ def render_next_week_outlook(
 
     lines.extend([
         "",
-        "*Model FPPG uses ESPN's league-specific projected FPPG when present, then season average; "
-        "recent 7/15/30-day splits are fallback inputs and trend context, not hard eligibility rules. "
-        "Pickup candidates are recommended only when ESPN position eligibility and active-slot limits "
-        "allow them to occupy an active lineup slot on every game date they are expected to be available. "
-        "Daily leagues optimize each date's "
-        "active slots; scoring-period-lock leagues optimize one weekly lineup. The scan covers up "
-        f"to {FREE_AGENT_POOL_SIZE} ESPN free agents.*",
+        "*Projections are not used. The season baseline is ESPN's realized league-scoring FPPG. "
+        "Where game logs are available, the model combines 70% season mean, 20% median, and 10% "
+        "last-five scoring shrunk toward the season mean with a five-game prior; it then applies "
+        "small bounded adjustments for coefficient of variation and the share of games reaching "
+        "75% of season FPPG. Lower-tail 20th-percentile scoring and log sample size are reported "
+        "for risk context. This is a transparent heuristic, not a trained predictive model. "
+        "All candidates are tested against the day-by-day schedule and your exact ESPN eligible slots; "
+        "a pickup is rejected when any expected-available game would be forced to the bench. "
+        "The engine re-runs the optimal lineup after each hypothetical swap, and only original "
+        "roster players can be proposed as drops. The scan covers up to "
+        f"{FREE_AGENT_POOL_SIZE} ESPN free agents.*",
         "",
-        "*This is a short-term points-league estimate. Role changes, late injury news, and actual "
-        "lineup decisions can change the result; no roster transactions are submitted.*",
+        "*The score is a season-production estimate, not a guaranteed future result. Injury-driven "
+        "role adjustments are capped and require both confirmed teammate absences and observed "
+        "recent minutes growth. Late news and lineup decisions can change the result; no transactions "
+        "are submitted.*",
     ])
     return "\n".join(lines)
 
