@@ -510,8 +510,14 @@ def parse_espn_news_signals(
                 r"sidelined|for at least \d+ weeks|at least \d+ weeks)\b",
                 lowered,
             ))
+            sustained_absence = bool(re.search(
+                r"\b(for at least \d+ weeks|for \d+ weeks|at least \d+ weeks|"
+                r"next \d+ games|rest of (?:the )?season|indefinitely)\b",
+                lowered,
+            ))
             signals.append({
                 "confirmed_absence": confirmed_absence,
+                "sustained_absence": sustained_absence,
                 "player_id": player_id,
                 "player_name": str(getattr(player, "name", player_name)),
                 "team_id": "",
@@ -687,12 +693,18 @@ def minutes_opportunity_watch(
                 "reasons": [],
                 "sources": [],
                 "confirmed_absence": False,
+                "sustained_absence": False,
             })
             if (
                 status_upper in {"OUT", "INACTIVE", "INJURY RESERVE", "INJURED RESERVE", "IR"}
                 or signal.get("confirmed_absence", False)
             ):
                 record["confirmed_absence"] = True
+            if (
+                status_upper in {"INJURY RESERVE", "INJURED RESERVE", "IR"}
+                or signal.get("sustained_absence", False)
+            ):
+                record["sustained_absence"] = True
             detail = str(signal.get("detail", "") or "").replace("|", "/").strip()
             detail_text = f", {detail[:72]}" if detail else ""
             reason = (
@@ -712,7 +724,7 @@ def minutes_opportunity_watch(
     for item in opportunity_by_player.values():
         candidate = item["candidate"]
         if (
-            item["confirmed_absence"]
+            item["sustained_absence"]
             and candidate.game_log_games >= 8
             and candidate.prior_minutes is not None
             and candidate.last_5_minutes is not None
@@ -796,10 +808,10 @@ def minutes_opportunity_watch(
         lines.append("")
         lines.append(
             "*Same-team/position matching is a watchlist signal, not proof of starter succession. "
-            "No extra minutes or fantasy points are assumed unless a teammate is confirmed OUT/INACTIVE "
-            "and the candidate's last-five game minutes are at least 15% and 3 minutes above the "
-            "pre-L5 baseline; only then is a +2% to +6% FPPG role adjustment applied. Otherwise the "
-            "news is shown as context only.*"
+            "No extra minutes or fantasy points are assumed unless a teammate has a sustained absence "
+            "(injury reserve or explicit multi-week news) and the candidate's last-five game minutes "
+            "are at least 15% and 3 minutes above the pre-L5 baseline; only then is a +2% to +6% FPPG "
+            "role adjustment applied. A single-game OUT or questionable tag remains watchlist-only.*"
         )
         source_urls = []
         for item in opportunities[:5]:
