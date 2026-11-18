@@ -842,7 +842,7 @@ class WaiverModelTests(unittest.TestCase):
                 "team": {"id": "9", "abbreviation": "GSW"},
                 "injuries": [{
                     "athlete": {"id": "3975", "displayName": "Starting Guard"},
-                    "status": "Out",
+                    "status": "Injury Reserve",
                     "type": {"name": "Ankle"},
                     "date": "2026-11-18T00:00Z",
                 }],
