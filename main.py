@@ -491,7 +491,7 @@ def parse_espn_news_signals(
             signal_status = "REST/LOAD-MANAGEMENT NEWS"
         elif re.search(r"minutes restriction|minutes limit|limited minutes", lowered):
             signal_status = "MINUTES-LIMIT NEWS"
-        elif re.search(r"ruled out|out tonight|out for|will miss|misses|sidelined|inactive|will sit|sitting out", lowered):
+        elif re.search(r"ruled out|out tonight|out for|will miss|to miss|misses|sidelined|inactive|will sit|sitting out", lowered):
             signal_status = "ABSENCE NEWS"
         else:
             signal_status = "INJURY-STATUS NEWS"
@@ -505,7 +505,13 @@ def parse_espn_news_signals(
             position = str(getattr(player, "position", "") or "")
             if not player_id or not team_abbr:
                 continue
+            confirmed_absence = bool(re.search(
+                r"\b(ruled out|will miss|to miss|out (?:tonight|today|for)|"
+                r"sidelined|for at least \d+ weeks|at least \d+ weeks)\b",
+                lowered,
+            ))
             signals.append({
+                "confirmed_absence": confirmed_absence,
                 "player_id": player_id,
                 "player_name": str(getattr(player, "name", player_name)),
                 "team_id": "",
@@ -682,7 +688,10 @@ def minutes_opportunity_watch(
                 "sources": [],
                 "confirmed_absence": False,
             })
-            if status_upper in {"OUT", "INACTIVE", "INJURY RESERVE", "INJURED RESERVE", "IR"}:
+            if (
+                status_upper in {"OUT", "INACTIVE", "INJURY RESERVE", "INJURED RESERVE", "IR"}
+                or signal.get("confirmed_absence", False)
+            ):
                 record["confirmed_absence"] = True
             detail = str(signal.get("detail", "") or "").replace("|", "/").strip()
             detail_text = f", {detail[:72]}" if detail else ""
@@ -745,8 +754,16 @@ def minutes_opportunity_watch(
         opportunities = list(opportunity_by_player.values())
         def opportunity_sort_key(item: dict) -> tuple[float, float, float]:
             candidate = item["candidate"]
+            minutes_growth = (
+                candidate.last_5_minutes / candidate.prior_minutes - 1.0
+                if candidate.last_5_minutes is not None
+                and candidate.prior_minutes is not None
+                and candidate.prior_minutes > 0 else 0.0
+            )
             return (
                 item["score"],
+                candidate.role_uplift,
+                minutes_growth,
                 candidate.estimated_points,
                 candidate.last_15 or 0.0,
             )
