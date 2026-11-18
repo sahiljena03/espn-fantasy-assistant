@@ -779,9 +779,10 @@ def minutes_opportunity_watch(
         lines.append("")
         lines.append(
             "*Same-team/position matching is a watchlist signal, not proof of starter succession. "
-            "A +2% to +6% FPPG role adjustment is applied only when a teammate is confirmed OUT/INACTIVE "
+            "No extra minutes or fantasy points are assumed unless a teammate is confirmed OUT/INACTIVE "
             "and the candidate's last-five game minutes are at least 15% and 3 minutes above the "
-            "pre-L5 baseline. Otherwise the news is shown as context only.*"
+            "pre-L5 baseline; only then is a +2% to +6% FPPG role adjustment applied. Otherwise the "
+            "news is shown as context only.*"
         )
         source_urls = []
         for item in opportunities[:5]:
