@@ -1371,7 +1371,7 @@ def render_team_schedule_targets(
     """Highlight four-game teams to target and two-game teams to avoid."""
     counts = team_game_counts(players, start, end)
     lines = [
-        "### Next-week team schedule targets",
+        "### Team schedule profile",
         "",
         f"**Scoring window:** {start.strftime('%b %-d')}–{end.strftime('%b %-d')}. "
         "Use the team schedule as a tiebreaker when streaming or choosing between similar players.",
@@ -1393,16 +1393,70 @@ def render_team_schedule_targets(
         "",
         "**Consider (3 games):** "
         + (", ".join(f"{team} (3)" for team in consider_teams) if consider_teams else "None")
-        + ". Three-game players remain eligible when projected weekly points and lineup gain are strong.",
+        + ". Three-game players remain eligible when actual-season production and marginal lineup gain justify them.",
         "",
         "**Avoid (2 games):** "
         + (", ".join(f"{team} (2)" for team in avoid_teams) if avoid_teams else "None"),
         "",
         "*Counts use unique scheduled NBA game IDs from ESPN player-card schedules. "
         "Four games are a schedule advantage, not a mandatory filter; three-game players are "
-        "still evaluated on projected weekly points and full-game lineup fit. Actual player "
-        "availability and lineup fit still matter.*",
+        "evaluated on actual-season production, available lineup capacity, and marginal lineup fit.*",
     ])
+    return "\n".join(lines)
+
+
+def render_daily_lineup_gaps(
+    roster: list[object],
+    candidates: dict[int, OutlookCandidate],
+    slots: list[str],
+    daily_lineups: bool,
+    start: date,
+    end: date,
+) -> str:
+    """Show the days with the most unused active slots in the current roster."""
+    assignments = lineup_assignments_by_date(roster, candidates, slots, daily_lineups)
+    scheduled_dates = sorted({
+        game_date
+        for candidate in candidates.values()
+        for game_date in candidate.game_dates
+        if start <= game_date <= end
+    })
+    lines = [
+        "### Remaining-day lineup capacity",
+        "",
+        "| Day | Roster players with a game | Active slots filled | Open active slots |",
+        "|---|---:|---:|---:|",
+    ]
+    if not scheduled_dates:
+        lines.append("| No scheduled games in this scoring window | — | — | — |")
+        return "\n".join(lines)
+    for game_date in scheduled_dates:
+        roster_playing = sum(
+            candidate.game_probabilities.get(game_date, 0.0) > 0
+            and candidate.lineup_slot != "IR"
+            for player in roster
+            for candidate in [candidates.get(getattr(player, "playerId", None))]
+            if candidate is not None
+        )
+        filled = len(assignments.get(game_date, {}))
+        open_slots = max(0, len(slots) - filled)
+        lines.append(
+            f"| {game_date.strftime('%A %b %-d')} | {roster_playing} "
+            f"| {filled}/{len(slots)} | **{open_slots}** |"
+        )
+    if not daily_lineups:
+        lines.extend([
+            "",
+            "*Your league uses a scoring-period lineup lock; the same weekly lineup assignment "
+            "is used for each date, so daily open-slot counts are informational rather than "
+            "a promise that lineups can be changed after the period locks.*",
+        ])
+    else:
+        lines.extend([
+            "",
+            "*Open active slots are the clearest streaming opportunity: the optimizer rewards "
+            "players whose real NBA game dates land on those days and who fit an eligible active slot.*",
+        ])
     return "\n".join(lines)
 
 
@@ -1412,11 +1466,13 @@ def render_next_week_outlook(
     free_agents: list[object],
     today: date,
     roster_players: list[object] | None = None,
+    scoring_window: tuple[date, date] | None = None,
+    window_title: str = "Next-week roster upgrades",
 ) -> str:
-    start, end = next_week_bounds(today)
+    start, end = scoring_window or next_week_bounds(today)
     roster = list(roster_players if roster_players is not None else (getattr(team, "roster", []) or []))
     roster_candidates = {
-        getattr(player, "playerId", None): outlook_candidate_from_player(player, start, end)
+        getattr(player, "playerId", None): outlook_candidate_from_player(player, start, end, as_of=today)
         for player in roster
         if getattr(player, "playerId", None) is not None
     }
@@ -1440,11 +1496,11 @@ def render_next_week_outlook(
         and roster_candidates[getattr(player, "playerId")].lineup_slot != "IR"
     ]
     lines = [
-        f"## Next-week roster upgrades ({start.strftime('%b %-d')}–{end.strftime('%b %-d')})",
+        f"## {window_title} ({start.strftime('%b %-d')}–{end.strftime('%b %-d')})",
         "",
-        "Pickups are ranked by the change they make to your projected **starting-lineup total**, "
-        "not by free-agent points per game alone. The model respects eligible positions, active "
-        "roster-slot limits, the NBA schedule, and ESPN injury availability.",
+        "Pickups are ranked by the change they make to your **actual-production starting-lineup total**. "
+        "Projections are excluded. The model uses this season's realized ESPN fantasy points, "
+        "game-log consistency, current availability, NBA schedule, and legal active-slot capacity.",
         "",
         f"**Lineup model:** {len(slots)} active slots · {lineup_mode}. "
         + ("Daily best-lineup optimization." if daily_lineups else "One best lineup across the scoring period."),
@@ -1497,15 +1553,14 @@ def render_next_week_outlook(
     candidate_players = []
     candidate_data = dict(roster_candidates)
     rejected = {
-        "FPPG above 30": 0,
-        "no scoring average": 0,
+        "no actual season scoring": 0,
         "no scheduled games": 0,
     }
     for player in free_agents:
         player_id = getattr(player, "playerId", None)
         if player_id is None or player_id in roster_ids:
             continue
-        candidate = outlook_candidate_from_player(player, start, end)
+        candidate = outlook_candidate_from_player(player, start, end, as_of=today)
         reason = free_agent_rejection_reason(candidate)
         if reason:
             rejected[reason] = rejected.get(reason, 0) + 1
@@ -1522,9 +1577,10 @@ def render_next_week_outlook(
             free_agents, candidate_players, candidate_data, all_league_roster, today
         ),
         "",
-        f"**Pickup filters:** excluded {rejected['FPPG above 30']} players above 30 FPPG. "
-        "Ownership does not restrict pickups. Roster players are eligible to drop only when "
-        "their Model FPPG is below 26; players at 26+ are protected.",
+        f"**Data exclusions:** {rejected['no actual season scoring']} players lacked usable actual-season scoring; "
+        f"{rejected['no scheduled games']} had no game in this scoring window. "
+        "There is no projection-based FPPG ceiling, no ownership cutoff, and no fixed FPPG drop threshold. "
+        "A drop is recommended only when the full legal-lineup comparison shows a positive gain.",
     ])
 
     if not candidate_players:
@@ -1534,6 +1590,13 @@ def render_next_week_outlook(
             "The report will not relax these rules to fill three recommendation slots.",
         ])
         return "\n".join(lines)
+
+    lines.extend([
+        "",
+        render_daily_lineup_gaps(
+            active_roster, candidate_data, slots, daily_lineups, start, end
+        ),
+    ])
 
     baseline = lineup_week_points(active_roster, candidate_data, slots, daily_lineups)
     virtual_roster = list(active_roster)
@@ -1586,12 +1649,12 @@ def render_next_week_outlook(
         if not eligible_drops:
             lines.extend([
                 "",
-                "No eligible drop candidate remains under the 26 Model FPPG drop threshold.",
+                "No roster player has sufficient actual-season scoring data to evaluate as a drop candidate.",
             ])
         else:
             lines.extend([
                 "",
-                "No pickup/drop pair was found that improves the projected lineup while allowing the pickup "
+                "No pickup/drop pair was found that improves the actual-production lineup while allowing the pickup "
                 "to use every expected-available game.",
             ])
         if lineup_blocked_add_ids:
