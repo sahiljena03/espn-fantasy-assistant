@@ -21,6 +21,7 @@ RECOMMENDATIONS = [
     {"pickup": "Draymond Green", "drop": "Naji Marshall"},
     {"pickup": "Cameron Johnson", "drop": "Kyle Kuzma"},
 ]
+WATCHLIST = ["Adem Bona", "Tacko Fall"]
 
 
 def normalized_name(value: object) -> str:
@@ -67,12 +68,13 @@ def main() -> int:
         if name and player_id is not None:
             ids_by_name[name] = player_id
 
+    names = (
+        {row["pickup"] for row in RECOMMENDATIONS}
+        | {row["drop"] for row in RECOMMENDATIONS}
+        | set(WATCHLIST)
+    )
     results = {}
-    for name in sorted({
-        row["pickup"] for row in RECOMMENDATIONS
-    } | {
-        row["drop"] for row in RECOMMENDATIONS
-    }):
+    for name in sorted(names):
         player_id = ids_by_name.get(normalized_name(name))
         if player_id is None:
             player_id = league.player_map.get(name)
@@ -92,16 +94,28 @@ def main() -> int:
             row for row in player_game_log_records(player, WEEK_END)
             if row["date"] is not None and WEEK_START <= row["date"] <= WEEK_END
         ]
+        played_records = [
+            row for row in records
+            if row.get("minutes") is not None and float(row["minutes"]) > 0
+        ]
         results[name] = {
             "status": "ok" if records else "no_game_stats",
             "player_id": player_id,
             "nba_team": getattr(player, "proTeam", None),
             "scheduled_dates": [item.isoformat() for item in games],
             "scheduled_games": len(games),
-            "played_games": len(records),
+            "played_games": len(played_records),
+            "dnp_or_minutes_missing_dates": [
+                row["date"].isoformat() for row in records
+                if row.get("minutes") is None
+            ],
             "actual_espn_fantasy_points": round(sum(float(row["points"]) for row in records), 2),
             "game_points": [
-                {"date": row["date"].isoformat(), "fantasy_points": round(float(row["points"]), 2)}
+                {
+                    "date": row["date"].isoformat(),
+                    "fantasy_points": round(float(row["points"]), 2),
+                    "minutes": row.get("minutes"),
+                }
                 for row in records
             ],
             "scoring_source": "ESPN player-card per-game applied_total (league-applied fantasy scoring)",
@@ -115,6 +129,7 @@ def main() -> int:
         "team_id": TEAM_ID,
         "scoring_type": getattr(settings, "scoring_type", None),
         "recommendations": RECOMMENDATIONS,
+        "missed_opportunity_watchlist": WATCHLIST,
         "players": results,
     }
     print("WAIVER_ACTUALS_JSON=" + json.dumps(output, sort_keys=True))
